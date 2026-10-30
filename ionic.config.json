@@ -1,0 +1,7 @@
+{
+  "name": "elimu-app",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "angular-standalone"
+}
