@@ -1,16 +1,13 @@
-import { Component, OnInit, inject } from '@angular/core';
+import { Component, inject, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
-import { AuthService } from '../../../core/services/auth.service';
 import {
-  IonContent, IonIcon, IonButtons, IonMenuButton, IonSpinner,
+  IonContent, IonIcon, IonButtons, IonBackButton, IonSpinner,
   IonHeader, IonToolbar, IonTitle
 } from '@ionic/angular';
 import { addIcons } from 'ionicons';
-import {
-  statsChartOutline, schoolOutline, alertCircleOutline
-} from 'ionicons/icons';
-import { Auth, onAuthStateChanged } from '@angular/fire/auth';
+import { statsChartOutline, schoolOutline, alertCircleOutline } from 'ionicons/icons';
+import { Auth, User, onAuthStateChanged } from '@angular/fire/auth';
 import { Firestore, doc, getDoc, collection, getDocs, query, where } from '@angular/fire/firestore';
 
 interface ExamResult {
@@ -25,14 +22,14 @@ interface ExamResult {
   selector: 'app-exam-results',
   standalone: true,
   imports: [
-    CommonModule, IonContent, IonIcon, IonButtons, IonMenuButton, IonSpinner,
+    CommonModule, IonContent, IonIcon, IonButtons, IonBackButton, IonSpinner,
     IonHeader, IonToolbar, IonTitle
   ],
   template: `
     <ion-header>
       <ion-toolbar class="header-gradient-toolbar">
         <ion-buttons slot="start">
-          <ion-menu-button menu="student-menu" class="menu-btn"></ion-menu-button>
+          <ion-back-button defaultHref="/student/dashboard" class="menu-btn"></ion-back-button>
         </ion-buttons>
         <ion-title>Academic Exam Results</ion-title>
       </ion-toolbar>
@@ -41,10 +38,10 @@ interface ExamResult {
     <ion-content class="mobile-dashboard-content">
       <div class="dashboard-body">
 
-        <!-- Summary Cards Grid -->
+        <!-- Summary Cards -->
         <div class="stats-grid">
           <div class="stat-card">
-            <span class="stat-label">Class / Program</span>
+            <span class="stat-label">Class</span>
             <span class="stat-value">{{ studentClass }}</span>
           </div>
           <div class="stat-card">
@@ -57,7 +54,7 @@ interface ExamResult {
           </div>
         </div>
 
-        <!-- Results Table Card -->
+        <!-- Results Table -->
         <div class="card">
           <div class="card-title">Performance Breakdown</div>
           <p class="card-subtitle">
@@ -75,23 +72,26 @@ interface ExamResult {
                 </tr>
               </thead>
               <tbody>
-                <!-- Loading State -->
                 <tr *ngIf="isLoading">
                   <td colspan="4" class="empty-state">
                     <ion-spinner name="crescent" color="primary"></ion-spinner>
-                    <p style="margin-top: 8px;">Loading exam records...</p>
+                    <p>Loading exam records...</p>
                   </td>
                 </tr>
 
-                <!-- Empty State -->
-                <tr *ngIf="!isLoading && resultsList.length === 0">
+                <tr *ngIf="!isLoading && loadError">
+                  <td colspan="4" class="empty-state error-text">
+                    <p>{{ loadError }}</p>
+                  </td>
+                </tr>
+
+                <tr *ngIf="!isLoading && !loadError && resultsList.length === 0">
                   <td colspan="4" class="empty-state">
-                    <ion-icon name="alert-circle-outline" style="font-size: 24px; color: #94a3b8;"></ion-icon>
+                    <ion-icon name="alert-circle-outline" class="empty-icon"></ion-icon>
                     <p>No exam results posted yet. Check back later.</p>
                   </td>
                 </tr>
 
-                <!-- Results Rows -->
                 <tr *ngFor="let res of resultsList">
                   <td><strong>{{ res.subject }}</strong></td>
                   <td>{{ res.score }}%</td>
@@ -124,11 +124,14 @@ interface ExamResult {
 
     .table-container { width: 100%; overflow-x: auto; border: 1px solid #e2e8f0; border-radius: 8px; }
     table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
-    th { background-color: #f8fafc; color: #64748b; font-weight: 600; padding: 12px 14px; border-bottom: 1px solid #e2e8f0; }
+    th { background-color: #f8fafc; color: #64748b; font-weight: 600; padding: 12px 14px; border-bottom: 1px solid #e2e8f0; white-space: nowrap; }
     td { padding: 12px 14px; border-bottom: 1px solid #e2e8f0; color: #1e293b; }
     tr:last-child td { border-bottom: none; }
 
     .empty-state { text-align: center; color: #64748b; padding: 2.5rem !important; }
+    .empty-state p { margin: 8px 0 0 0; }
+    .empty-icon { font-size: 24px; color: #94a3b8; }
+    .error-text { color: #dc2626; }
 
     .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
     .badge-success { background: #DCFCE7; color: #166534; }
@@ -136,140 +139,157 @@ interface ExamResult {
     .badge-danger { background: #FEE2E2; color: #991B1B; }
   `]
 })
-export class ExamResultsPage implements OnInit {
-  isLoading: boolean = true;
-  studentClass: string = 'Loading...';
-  unitsCount: number = 0;
-  averageScore: string = '-';
+export class ExamResultsPage {
+  isLoading = true;
+  loadError = '';
+  studentClass = 'Loading...';
+  unitsCount = 0;
+  averageScore = '-';
   resultsList: ExamResult[] = [];
 
   private auth = inject(Auth);
   private firestore = inject(Firestore);
-  private authService = inject(AuthService);
+  private cdr = inject(ChangeDetectorRef);
   private router = inject(Router);
 
   constructor() {
     addIcons({ statsChartOutline, schoolOutline, alertCircleOutline });
   }
 
-  ngOnInit() {
-    onAuthStateChanged(this.auth, async (user) => {
-      if (!user) {
-        this.router.navigate(['/login']);
-        return;
-      }
-      await this.loadStudentResults(user.uid, user.email || '');
+  // Ionic caches pages, so this runs every time the page is shown and always
+  // loads the CURRENTLY logged-in student's results.
+  async ionViewWillEnter() {
+    this.isLoading = true;
+    this.loadError = '';
+    this.studentClass = 'Loading...';
+    this.unitsCount = 0;
+    this.averageScore = '-';
+    this.resultsList = [];
+    this.cdr.detectChanges();
+
+    const user = await this.waitForUser();
+    if (!user) {
+      this.isLoading = false;
+      this.router.navigate(['/login']);
+      return;
+    }
+    await this.loadStudentResults(user.uid, user.email || '');
+  }
+
+  // Waits for Firebase to restore the session (auth.currentUser can be null at startup)
+  private waitForUser(): Promise<User | null> {
+    return new Promise(resolve => {
+      const unsub = onAuthStateChanged(this.auth, user => {
+        unsub();
+        resolve(user);
+      });
     });
+  }
+
+  // Fetches only THIS student's documents from a collection (instead of downloading
+  // the whole collection and filtering on the phone).
+  private async fetchOwnResults(colName: string, uid: string, admNo: string, email: string): Promise<any[]> {
+    const col = collection(this.firestore, colName);
+    const queries = [
+      query(col, where('studentUid', '==', uid)),
+      query(col, where('studentId', '==', uid))
+    ];
+    if (admNo) queries.push(query(col, where('admissionNumber', '==', admNo)));
+    if (email) queries.push(query(col, where('email', '==', email)));
+
+    const settled = await Promise.allSettled(queries.map(q => getDocs(q)));
+    const found = new Map<string, any>();
+    settled.forEach(res => {
+      if (res.status === 'fulfilled') {
+        res.value.forEach(d => found.set(d.id, d.data()));
+      } else {
+        console.warn(`Query on ${colName} failed:`, res.reason);
+      }
+    });
+    return [...found.values()];
+  }
+
+  // First usable score field, or null when the document has no score at all
+  // (e.g. a CAT-only record in the "results" collection).
+  private extractScore(r: any): number | null {
+    for (const key of ['score', 'marks', 'totalScore']) {
+      const v = r[key];
+      if (v !== undefined && v !== null && v !== '' && !isNaN(Number(v))) return Number(v);
+    }
+    return null;
   }
 
   async loadStudentResults(uid: string, email: string) {
     this.isLoading = true;
     try {
-      // 1. Fetch Student Profile for Class & Admission No
-      let studentClass = 'BBIT / Information Technology';
-      let studentAdmissionNo = '';
-
+      // 1. Student profile
+      let studentClass = 'N/A';
+      let admNo = '';
       try {
-        const studentSnap = await getDoc(doc(this.firestore, "students", uid));
+        const studentSnap = await getDoc(doc(this.firestore, 'students', uid));
         if (studentSnap.exists()) {
-          const sData = studentSnap.data();
-          studentClass = sData['className'] || sData['grade'] || studentClass;
-          studentAdmissionNo = sData['admissionNumber'] || sData['admissionNo'] || '';
+          const s: any = studentSnap.data();
+          studentClass = s['className'] || s['grade'] || 'N/A';
+          admNo = s['admissionNumber'] || s['admissionNo'] || s['admNo'] || s['regNumber'] || '';
         }
       } catch (e) {
-        console.warn("Could not fetch student profile details:", e);
+        console.warn('Could not fetch student profile details:', e);
       }
-
       this.studentClass = studentClass;
 
-      // 2. Fetch Exam Results from Firestore
-      let rawResults: any[] = [];
-
-      try {
-        const qUid = query(collection(this.firestore, "examResults"), where("studentUid", "==", uid));
-        const snapUid = await getDocs(qUid);
-        snapUid.forEach(d => rawResults.push(d.data()));
-      } catch (e) {}
-
-      if (rawResults.length === 0 && studentAdmissionNo) {
-        try {
-          const qAdm = query(collection(this.firestore, "examResults"), where("admissionNumber", "==", studentAdmissionNo));
-          const snapAdm = await getDocs(qAdm);
-          snapAdm.forEach(d => rawResults.push(d.data()));
-        } catch (e) {}
+      // 2. Results: examResults first, then fall back to results / grades
+      let scored: { raw: any; score: number }[] = [];
+      for (const colName of ['examResults', 'results', 'grades']) {
+        const docs = await this.fetchOwnResults(colName, uid, admNo, email);
+        scored = docs
+          .map(raw => ({ raw, score: this.extractScore(raw) }))
+          .filter((x): x is { raw: any; score: number } => x.score !== null);
+        if (scored.length > 0) break;
       }
 
-      // Fallback: check collections examResults, results, grades
-      if (rawResults.length === 0) {
-        const collectionsToCheck = ["examResults", "results", "grades"];
-        for (const colName of collectionsToCheck) {
-          try {
-            const altSnap = await getDocs(collection(this.firestore, colName));
-            altSnap.forEach(d => {
-              const data = d.data();
-              if (
-                data['studentUid'] === uid ||
-                data['studentId'] === uid ||
-                data['admissionNumber'] === studentAdmissionNo ||
-                (email && data['email'] === email)
-              ) {
-                rawResults.push(data);
-              }
-            });
-            if (rawResults.length > 0) break;
-          } catch (err) {}
-        }
-      }
+      // 3. Format
+      const formatted: ExamResult[] = scored.map(({ raw, score }) => {
+        const subject = raw['subject'] || raw['unitName'] || raw['name'] || 'Unknown Unit';
+        const grade = raw['grade'] || this.getGradeLetter(score);
 
-      // 3. Process and format results
-      if (rawResults.length > 0) {
-        this.unitsCount = rawResults.length;
-        let totalScore = 0;
-        const formatted: ExamResult[] = [];
+        let badgeClass = 'badge-success';
+        if (grade === 'C' || grade === 'D' || score < 50) badgeClass = 'badge-warning';
+        if (grade === 'E' || grade === 'F' || score < 40) badgeClass = 'badge-danger';
 
-        rawResults.forEach(res => {
-          const subject = res['subject'] || res['unitName'] || res['name'] || "Unknown Unit";
-          const score = Number(res['score'] || res['marks'] || res['totalScore'] || 0);
-          totalScore += score;
+        const remarks = raw['remarks'] || raw['comment'] || this.getRemarks(score);
+        return { subject, score, grade, remarks, badgeClass };
+      });
 
-          let grade = res['grade'] || this.getGradeLetter(score);
-          let badgeClass = "badge-success";
-          if (grade === "C" || grade === "D" || score < 50) badgeClass = "badge-warning";
-          if (grade === "E" || grade === "F" || score < 40) badgeClass = "badge-danger";
+      formatted.sort((a, b) => a.subject.localeCompare(b.subject));
 
-          const remarks = res['remarks'] || res['comment'] || this.getRemarks(score);
-
-          formatted.push({ subject, score, grade, remarks, badgeClass });
-        });
-
-        this.resultsList = formatted;
-        this.averageScore = (totalScore / rawResults.length).toFixed(1) + '%';
-      } else {
-        this.resultsList = [];
-        this.unitsCount = 0;
-        this.averageScore = '-';
-      }
+      this.resultsList = formatted;
+      this.unitsCount = formatted.length;
+      this.averageScore = formatted.length
+        ? (formatted.reduce((sum, r) => sum + r.score, 0) / formatted.length).toFixed(1) + '%'
+        : '-';
 
     } catch (err) {
-      console.error("Error loading exam results:", err);
+      console.error('Error loading exam results:', err);
+      this.loadError = 'Failed to load results. Please try again.';
     } finally {
       this.isLoading = false;
+      this.cdr.detectChanges();
     }
   }
 
   getGradeLetter(score: number): string {
-    if (score >= 70) return "A";
-    if (score >= 60) return "B";
-    if (score >= 50) return "C";
-    if (score >= 40) return "D";
-    return "E";
+    if (score >= 70) return 'A';
+    if (score >= 60) return 'B';
+    if (score >= 50) return 'C';
+    if (score >= 40) return 'D';
+    return 'E';
   }
 
   getRemarks(score: number): string {
-    if (score >= 70) return "Excellent performance";
-    if (score >= 60) return "Good work, keep it up";
-    if (score >= 50) return "Satisfactory";
-    if (score >= 40) return "Needs improvement";
-    return "Fail / Retake required";
+    if (score >= 70) return 'Excellent performance';
+    if (score >= 60) return 'Good work, keep it up';
+    if (score >= 50) return 'Satisfactory';
+    if (score >= 40) return 'Needs improvement';
+    return 'Fail / Retake required';
   }
 }

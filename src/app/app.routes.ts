@@ -1,4 +1,3 @@
-
 import { Routes } from '@angular/router';
 
 export const routes: Routes = [
@@ -71,7 +70,7 @@ export const routes: Routes = [
         path: 'hostel',
         loadComponent: () =>
           import('./pages/admin-dashboard/hostel/hostel.page')
-            .then(m => m.HostelPage)
+          .then(m => m.HostelBookingPage)
       },
       {
         path: 'attendance',
@@ -141,11 +140,11 @@ export const routes: Routes = [
         pathMatch: 'full'
       },
       {
-  path: 'home',
-  loadComponent: () =>
-    import('./pages/student-dashboard/home/student-home.page')
-      .then(m => m.StudentHomePage)
-},
+        path: 'home',
+        loadComponent: () =>
+          import('./pages/student-dashboard/home/student-home.page')
+            .then(m => m.StudentHomePage)
+      },
       {
         path: 'fees',
         loadComponent: () =>
@@ -162,7 +161,7 @@ export const routes: Routes = [
         path: 'hostel-booking',
         loadComponent: () =>
           import('./pages/student-dashboard/hostel-booking/hostel-booking.page')
-            .then(m => m.HostelBookingPage)
+            .then(m => m.HostelPage)
       },
       {
         path: 'attendance',
@@ -182,18 +181,20 @@ export const routes: Routes = [
           import('./pages/student-dashboard/exam-card/exam-card.page')
             .then(m => m.ExamCardPage)
       },
-      { path: 'exam-results',
-       loadComponent: () => import('./pages/student-dashboard/exam-results/exam-results.page')
-       .then(m => m.ExamResultsPage) 
+      { 
+        path: 'exam-results',
+        loadComponent: () => import('./pages/student-dashboard/exam-results/exam-results.page')
+        .then(m => m.ExamResultsPage) 
       },
       { 
-      path: 'supplementary-registration', 
-      loadComponent: () => import('./pages/student-dashboard/supplementary-registration/supplementary-registration')
-      .then(m => m.SupplementaryRegistrationPage) 
-     },
-     {
-       path: 'timetable', loadComponent: () => import('./pages/student-dashboard/timetable/timetable.page')
-       .then(m => m.TimetablePage) 
+        path: 'supplementary-registration', 
+        loadComponent: () => import('./pages/student-dashboard/supplementary-registration/supplementary-registration')
+        .then(m => m.SupplementaryRegistrationPage) 
+      },
+      {
+        path: 'timetable', 
+        loadComponent: () => import('./pages/student-dashboard/timetable/timetable.page')
+        .then(m => m.TimetablePage) 
       },
       {
         path: '**',
@@ -202,8 +203,95 @@ export const routes: Routes = [
     ]
   },
 
+  // Teacher Portal
   {
-    path: '**',
-    redirectTo: 'login'
+    path: 'teacher',
+    children: [
+      {
+        path: '',
+        redirectTo: 'dashboard',
+        pathMatch: 'full'
+      },
+      {
+        path: 'dashboard',
+        loadComponent: () => import('./pages/teacher-dashboard/teacher-dashboard.page').then(m => m.TeacherDashboardPage)
+      },
+      {
+        path: 'home',
+        loadComponent: () => import('./pages/teacher-dashboard/teacher-dashboard.page').then(m => m.TeacherDashboardPage)
+      },
+      {
+        path: 'classes',
+        loadComponent: () => import('./pages/teacher-dashboard/classes/teacher-classes.page').then(m => m.TeacherClassesPage)
+      },
+      {
+        path: 'attendance',
+        loadComponent: () => import('./pages/teacher-dashboard/attendance/teacher-attendance.page').then(m => m.TeacherAttendancePage)
+      },
+      {
+        path: 'marks',
+        loadComponent: () => import('./pages/teacher-dashboard/marks/teacher-marks.page').then(m => m.TeacherMarksPage)
+      },
+      {
+        path: 'materials',
+        loadComponent: () => import('./pages/teacher-dashboard/materials/teacher-materials.page').then(m => m.TeacherMaterialsPage)
+      },
+      {
+        path: 'timetable',
+        loadComponent: () => import('./pages/teacher-dashboard/timetable/teacher-timetable.page').then(m => m.TeacherTimetablePage)
+      },
+      {
+        path: '**',
+        redirectTo: 'login'
+      } 
+    ]
+  },
+
+  // Accountant Portal (Fixed paths)
+  {
+    path: 'accountant',
+    children: [
+      {
+        path: '',
+        redirectTo: 'analytics',
+        pathMatch: 'full'
+      },
+      {
+        path: 'dashboard',
+        loadComponent: () => import('./pages/accountant-dashboard/accountant-dashboard.page').then(m => m.AccountantDashboardPage)
+      },
+      {
+        path: 'expenses', 
+        loadComponent: () => import('./pages/accountant-dashboard/expenses/accountant-expenses.page').then(m => m.AccountantExpensesPage)
+      },
+      {
+        path: 'analytics', 
+        loadComponent: () => import('./pages/accountant-dashboard/analytics/accountant-analytics.page').then(m => m.AccountantAnalyticsPage)
+      },
+      {
+        path: '**',
+        redirectTo: 'login'
+      } 
+    ]
+  },
+
+  // VC Portal
+  {
+    path: 'vc',
+    children: [
+      {
+        path: '',
+        redirectTo: 'dashboard',
+        pathMatch: 'full'
+      },
+      {
+        path: 'dashboard',
+        loadComponent: () => import('./pages/vc-dashboard/vc-dashboard.page').then(m => m.VcDashboardPage)
+      },
+      {
+        path: '**',
+        redirectTo: 'login'
+      } 
+    ]
   }
 ];

@@ -1,27 +1,28 @@
-import { Component, OnInit, inject } from '@angular/core';
+import { Component, inject, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
-import { AuthService } from '../../../core/services/auth.service';
 import {
-  IonContent, IonIcon, IonButtons, IonMenuButton, IonSpinner,
-  IonHeader, IonToolbar, IonTitle
+  IonContent, IonIcon, IonButtons, IonBackButton, IonSpinner,
+  IonHeader, IonToolbar, IonTitle, AlertController
 } from '@ionic/angular';
 import { addIcons } from 'ionicons';
+import { alertCircleOutline, checkmarkCircleOutline } from 'ionicons/icons';
+import { Auth, User, onAuthStateChanged } from '@angular/fire/auth';
 import {
-  businessOutline, alertCircleOutline, checkmarkCircleOutline
-} from 'ionicons/icons';
-import { Auth, onAuthStateChanged } from '@angular/fire/auth';
-import { Firestore, collection, getDocs, doc, setDoc, serverTimestamp } from '@angular/fire/firestore';
+  Firestore, collection, getDocs, getDoc, doc, setDoc, serverTimestamp,
+  query, where, documentId
+} from '@angular/fire/firestore';
 
 interface EligibleUnit {
   code: string;
   name: string;
   grade: string;
-  score: number;
+  score: number | null;
 }
 
 interface RegisteredSupplementary {
   dateStr: string;
+  sortKey: number;
   unitCode: string;
   unitName: string;
 }
@@ -30,23 +31,23 @@ interface RegisteredSupplementary {
   selector: 'app-supplementary-registration',
   standalone: true,
   imports: [
-    CommonModule, IonContent, IonIcon, IonButtons, IonMenuButton, IonSpinner,
+    CommonModule, IonContent, IonIcon, IonButtons, IonBackButton, IonSpinner,
     IonHeader, IonToolbar, IonTitle
   ],
   template: `
     <ion-header>
       <ion-toolbar class="header-gradient-toolbar">
         <ion-buttons slot="start">
-          <ion-menu-button menu="student-menu" class="menu-btn"></ion-menu-button>
+          <ion-back-button defaultHref="/student/dashboard" class="menu-btn"></ion-back-button>
         </ion-buttons>
-        <ion-title>Supplementary Examination Registration</ion-title>
+        <ion-title>Supplementary Registration</ion-title>
       </ion-toolbar>
     </ion-header>
 
     <ion-content class="mobile-dashboard-content">
       <div class="dashboard-body">
 
-        <!-- Register Supplementary Card -->
+        <!-- Eligible Units -->
         <div class="card">
           <div class="card-title">Eligible Failed Units for Supplementary Registration</div>
           <div class="card-desc">
@@ -65,30 +66,39 @@ interface RegisteredSupplementary {
                 </tr>
               </thead>
               <tbody>
-                <!-- Loading State -->
-                <tr *ngIf="isLoadingEligible">
+                <tr *ngIf="isLoading">
                   <td colspan="5" class="empty-state">
                     <ion-spinner name="crescent" color="primary"></ion-spinner>
-                    <p style="margin-top: 8px;">Loading student exam performance...</p>
+                    <p>Loading student exam performance...</p>
                   </td>
                 </tr>
 
-                <!-- Empty State -->
-                <tr *ngIf="!isLoadingEligible && availableToRegister.length === 0">
+                <tr *ngIf="!isLoading && loadError">
+                  <td colspan="5" class="empty-state error-text">
+                    <p>{{ loadError }}</p>
+                  </td>
+                </tr>
+
+                <tr *ngIf="!isLoading && !loadError && availableToRegister.length === 0">
                   <td colspan="5" class="empty-state">
-                    <ion-icon name="checkmark-circle-outline" style="font-size: 24px; color: #16a34a;"></ion-icon>
+                    <ion-icon name="checkmark-circle-outline" class="empty-icon ok"></ion-icon>
                     <p>No unbooked failed units found for your account. All cleared or already registered!</p>
                   </td>
                 </tr>
 
-                <!-- Eligible Units Rows -->
                 <tr *ngFor="let unit of availableToRegister">
                   <td><strong>{{ unit.code }}</strong></td>
                   <td>{{ unit.name }}</td>
-                  <td><span class="score-fail">Grade {{ unit.grade }} ({{ unit.score }} Marks)</span></td>
+                  <td>
+                    <span class="score-fail">
+                      Grade {{ unit.grade }}<ng-container *ngIf="unit.score !== null"> ({{ unit.score }} Marks)</ng-container>
+                    </span>
+                  </td>
                   <td class="fee-free">Free (KES 0)</td>
                   <td>
-                    <button class="btn-primary" (click)="registerSupplementary(unit)">Register Supplementary</button>
+                    <button class="btn-primary" [disabled]="busyCode !== null" (click)="registerSupplementary(unit)">
+                      {{ busyCode === unit.code ? 'Registering...' : 'Register Supplementary' }}
+                    </button>
                   </td>
                 </tr>
               </tbody>
@@ -96,7 +106,7 @@ interface RegisteredSupplementary {
           </div>
         </div>
 
-        <!-- Registered Supplementary Units Card -->
+        <!-- Registered Units -->
         <div class="card">
           <div class="card-title">My Registered Supplementary Units & Exams</div>
           <div class="card-desc">Units currently booked and scheduled as supplementary units.</div>
@@ -113,29 +123,26 @@ interface RegisteredSupplementary {
                 </tr>
               </thead>
               <tbody>
-                <!-- Loading State -->
-                <tr *ngIf="isLoadingRegistered">
+                <tr *ngIf="isLoading">
                   <td colspan="5" class="empty-state">
                     <ion-spinner name="crescent" color="primary"></ion-spinner>
-                    <p style="margin-top: 8px;">Loading booked supplementary units...</p>
+                    <p>Loading booked supplementary units...</p>
                   </td>
                 </tr>
 
-                <!-- Empty State -->
-                <tr *ngIf="!isLoadingRegistered && registeredList.length === 0">
+                <tr *ngIf="!isLoading && registeredList.length === 0">
                   <td colspan="5" class="empty-state">
-                    <ion-icon name="alert-circle-outline" style="font-size: 24px; color: #94a3b8;"></ion-icon>
+                    <ion-icon name="alert-circle-outline" class="empty-icon"></ion-icon>
                     <p>You have not registered for any supplementary units yet.</p>
                   </td>
                 </tr>
 
-                <!-- Registered Rows -->
                 <tr *ngFor="let item of registeredList">
                   <td>{{ item.dateStr }}</td>
                   <td><strong>{{ item.unitCode }}</strong></td>
                   <td>{{ item.unitName }}</td>
                   <td><span class="badge-supp">Supplementary Unit</span></td>
-                  <td style="font-weight: 600; color: var(--success);">KES 0 (Free)</td>
+                  <td class="fee-free">KES 0 (Free)</td>
                 </tr>
               </tbody>
             </table>
@@ -158,177 +165,280 @@ interface RegisteredSupplementary {
 
     .table-container { width: 100%; overflow-x: auto; border: 1px solid #e2e8f0; border-radius: 8px; }
     table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
-    th { background-color: #f8fafc; color: #64748b; font-weight: 600; padding: 12px 14px; border-bottom: 1px solid #e2e8f0; }
-    td { padding: 12px 14px; border-bottom: 1px solid #e2e8f0; color: #1e293b; }
+    th { background-color: #f8fafc; color: #64748b; font-weight: 600; padding: 12px 14px; border-bottom: 1px solid #e2e8f0; white-space: nowrap; }
+    td { padding: 12px 14px; border-bottom: 1px solid #e2e8f0; color: #1e293b; vertical-align: middle; }
     tr:last-child td { border-bottom: none; }
 
     .empty-state { text-align: center; color: #64748b; padding: 2.5rem !important; }
-    .score-fail { color: #dc2626; font-weight: 700; }
-    .fee-free { color: #16a34a; font-weight: 600; }
+    .empty-state p { margin: 8px 0 0 0; }
+    .empty-icon { font-size: 24px; color: #94a3b8; }
+    .empty-icon.ok { color: #16a34a; }
+    .error-text { color: #dc2626; }
 
-    .btn-primary { background-color: #2563eb; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 12px; cursor: pointer; transition: background 0.2s; }
-    .btn-primary:hover { background-color: #1d4ed8; }
+    .score-fail { color: #dc2626; font-weight: 700; white-space: nowrap; }
+    .fee-free { color: #16a34a; font-weight: 600; white-space: nowrap; }
 
-    .badge-supp { background-color: #fef3c7; color: #b45309; padding: 3px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; }
+    .btn-primary { background-color: #2563eb; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 12px; cursor: pointer; transition: background 0.2s; white-space: nowrap; }
+    .btn-primary:hover:not(:disabled) { background-color: #1d4ed8; }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .badge-supp { background-color: #fef3c7; color: #b45309; padding: 3px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; white-space: nowrap; }
   `]
 })
-export class SupplementaryRegistrationPage implements OnInit {
-  isLoadingEligible: boolean = true;
-  isLoadingRegistered: boolean = true;
-  currentUserUid: string | null = null;
+export class SupplementaryRegistrationPage {
+  isLoading = true;
+  loadError = '';
+  busyCode: string | null = null;
+  currentUserUid = '';
 
   availableToRegister: EligibleUnit[] = [];
   registeredList: RegisteredSupplementary[] = [];
 
   private auth = inject(Auth);
   private firestore = inject(Firestore);
-  private authService = inject(AuthService);
+  private cdr = inject(ChangeDetectorRef);
   private router = inject(Router);
+  private alertCtrl = inject(AlertController);
 
   constructor() {
-    addIcons({ businessOutline, alertCircleOutline, checkmarkCircleOutline });
+    addIcons({ alertCircleOutline, checkmarkCircleOutline });
   }
 
-  ngOnInit() {
-    onAuthStateChanged(this.auth, async (user) => {
-      if (!user) {
-        this.router.navigate(['/login']);
-        return;
-      }
-      this.currentUserUid = user.uid;
-      await this.loadEligibleAndRegisteredSupplementaries();
+  // Ionic caches pages, so this runs every time the page is shown and always
+  // loads the CURRENTLY logged-in student's data.
+  async ionViewWillEnter() {
+    this.isLoading = true;
+    this.loadError = '';
+    this.availableToRegister = [];
+    this.registeredList = [];
+    this.cdr.detectChanges();
+
+    const user = await this.waitForUser();
+    if (!user) {
+      this.isLoading = false;
+      this.router.navigate(['/login']);
+      return;
+    }
+    this.currentUserUid = user.uid;
+    await this.loadEligibleAndRegisteredSupplementaries();
+  }
+
+  // Waits for Firebase to restore the session (auth.currentUser can be null at startup)
+  private waitForUser(): Promise<User | null> {
+    return new Promise(resolve => {
+      const unsub = onAuthStateChanged(this.auth, user => {
+        unsub();
+        resolve(user);
+      });
     });
   }
 
-  async loadEligibleAndRegisteredSupplementaries() {
-    if (!this.currentUserUid) return;
+  // Fetches only THIS student's documents instead of downloading the whole collection.
+  // Matches on the given fields, or a document ID that starts with the uid.
+  private async fetchOwnDocs(
+    collectionName: string,
+    uid: string,
+    matchFields: { field: string; value: string }[]
+  ): Promise<Map<string, any>> {
+    const found = new Map<string, any>();
+    const col = collection(this.firestore, collectionName);
 
-    this.isLoadingEligible = true;
-    this.isLoadingRegistered = true;
+    const queries = [
+      ...matchFields.filter(m => m.value).map(m => query(col, where(m.field, '==', m.value))),
+      query(col, where(documentId(), '>=', uid), where(documentId(), '<=', uid + '\uf8ff'))
+    ];
+
+    const settled = await Promise.allSettled(queries.map(q => getDocs(q)));
+    settled.forEach(res => {
+      if (res.status === 'fulfilled') {
+        res.value.forEach(d => found.set(d.id, d.data()));
+      } else {
+        console.warn(`Query on ${collectionName} failed:`, res.reason);
+      }
+    });
+    return found;
+  }
+
+  private extractScore(r: any): number | null {
+    for (const key of ['marks', 'score', 'mark', 'totalScore']) {
+      const v = r[key];
+      if (v !== undefined && v !== null && v !== '' && !isNaN(Number(v))) return Number(v);
+    }
+    return null;
+  }
+
+  async loadEligibleAndRegisteredSupplementaries() {
+    const uid = this.currentUserUid;
+    if (!uid) return;
+
+    this.isLoading = true;
+    this.loadError = '';
 
     try {
-      // 1. Fetch Subjects lookup map
+      // 0. Admission number (so we find results posted by admission number, like the Results page)
+      let admNo = '';
+      try {
+        const studentSnap = await getDoc(doc(this.firestore, 'students', uid));
+        if (studentSnap.exists()) {
+          const s: any = studentSnap.data();
+          admNo = s['admissionNumber'] || s['admissionNo'] || s['admNo'] || s['regNumber'] || '';
+        }
+      } catch (e) {}
+
+      // 1. Subject lookup map
       const subjectsMap: { [key: string]: { code: string; name: string } } = {};
       try {
-        const subjectsSnap = await getDocs(collection(this.firestore, "subjects"));
+        const subjectsSnap = await getDocs(collection(this.firestore, 'subjects'));
         subjectsSnap.forEach(d => {
           const data: any = d.data();
           const code = data.code || data.subjectCode || data.unitCode || d.id;
           const name = data.name || data.title || data.subjectName || code;
           subjectsMap[d.id] = { code, name };
           subjectsMap[code] = { code, name };
-          if (name) subjectsMap[name.toLowerCase()] = { code, name };
+          if (name) subjectsMap[String(name).toLowerCase()] = { code, name };
         });
       } catch (e) {
-        console.warn("Subjects lookup skipped:", e);
+        console.warn('Subjects lookup skipped:', e);
       }
 
-      // 2. Scan collections for failed units
+      // 2. Failed units from this student's results only
       const failedUnitsMap: { [key: string]: EligibleUnit } = {};
 
-      const checkResultsCollection = async (collName: string) => {
-        try {
-          const snap = await getDocs(collection(this.firestore, collName));
-          snap.forEach(d => {
-            const r: any = d.data();
-            const matchesStudent = (r.studentUid === this.currentUserUid) || (r.studentId === this.currentUserUid) || (d.id.includes(this.currentUserUid!));
+      const matchFields = [
+        { field: 'studentUid', value: uid },
+        { field: 'studentId', value: uid },
+        { field: 'admissionNumber', value: admNo }
+      ];
 
-            if (matchesStudent) {
-              const grade = String(r.grade || "").toUpperCase().trim();
-              const score = Number(r.marks || r.score || r.mark || 100);
-              const isFail = grade === 'F' || grade === 'E' || (score < 40 && score > 0);
+      for (const collName of ['examResults', 'results']) {
+        const docs = await this.fetchOwnDocs(collName, uid, matchFields);
 
-              if (isFail) {
-                let rawCode = r.unitCode || r.subjectCode || r.code || r.subjectId || '';
-                let rawName = r.unitName || r.subjectName || r.subject || r.name || '';
+        docs.forEach((r: any) => {
+          const grade = String(r.grade || '').toUpperCase().trim();
+          const score = this.extractScore(r);
+          const isFail = grade === 'F' || grade === 'E' || (score !== null && score > 0 && score < 40);
+          if (!isFail) return;
 
-                if (rawCode && !/\d/.test(rawCode) && rawCode.length > 4) {
-                  if (!rawName) rawName = rawCode;
-                  rawCode = "";
-                }
+          let rawCode: string = r.unitCode || r.subjectCode || r.code || r.subjectId || '';
+          let rawName: string = r.unitName || r.subjectName || r.subject || r.name || '';
 
-                if (rawName && subjectsMap[rawName.toLowerCase()]) {
-                  rawCode = subjectsMap[rawName.toLowerCase()].code;
-                  rawName = subjectsMap[rawName.toLowerCase()].name;
-                } else if (rawCode && subjectsMap[rawCode]) {
-                  rawName = subjectsMap[rawCode].name;
-                  rawCode = subjectsMap[rawCode].code;
-                }
+          // A "code" that is really a name (e.g. "Physics")
+          if (rawCode && !/\d/.test(rawCode) && rawCode.length > 4) {
+            if (!rawName) rawName = rawCode;
+            rawCode = '';
+          }
 
-                const finalCode = (rawCode && !rawCode.includes(this.currentUserUid!)) ? rawCode : "UNIT-" + Math.floor(Math.random() * 899 + 100);
-                const finalName = rawName || "Academic Unit";
+          if (rawName && subjectsMap[rawName.toLowerCase()]) {
+            rawCode = subjectsMap[rawName.toLowerCase()].code;
+            rawName = subjectsMap[rawName.toLowerCase()].name;
+          } else if (rawCode && subjectsMap[rawCode]) {
+            rawName = subjectsMap[rawCode].name;
+            rawCode = subjectsMap[rawCode].code;
+          }
 
-                failedUnitsMap[finalCode] = {
-                  code: finalCode,
-                  name: finalName,
-                  grade: grade || 'F',
-                  score: score
-                };
-              }
-            }
-          });
-        } catch (err) {
-          console.warn(`Could not read ${collName}:`, err);
-        }
-      };
+          // Stable code: never random, otherwise a registered unit would reappear as
+          // "eligible" on the next load. Falls back to the unit name, like the Exam Card does.
+          const finalCode = (rawCode && !rawCode.includes(uid)) ? rawCode : rawName;
+          if (!finalCode) return;
 
-      await checkResultsCollection("examResults");
-      await checkResultsCollection("results");
+          failedUnitsMap[finalCode] = {
+            code: finalCode,
+            name: rawName || 'Academic Unit',
+            grade: grade || 'F',
+            score
+          };
+        });
+      }
 
-      const failedUnits = Object.values(failedUnitsMap);
-
-      // 3. Fetch registered supplementary units
+      // 3. Already registered supplementaries (this student only)
       const regList: RegisteredSupplementary[] = [];
       const registeredCodes = new Set<string>();
 
       try {
-        const suppSnap = await getDocs(collection(this.firestore, "studentSupplementaries"));
-        suppSnap.forEach(d => {
-          const sData: any = d.data();
-          if (sData.studentUid === this.currentUserUid || d.id.startsWith(this.currentUserUid!)) {
-            registeredCodes.add(sData.unitCode);
-            const dateStr = sData.registeredAt?.toDate ? sData.registeredAt.toDate().toLocaleDateString() : 'Recent';
-            regList.push({
-              dateStr,
-              unitCode: sData.unitCode,
-              unitName: sData.unitName
-            });
-          }
+        const supps = await this.fetchOwnDocs('studentSupplementaries', uid, [
+          { field: 'studentUid', value: uid }
+        ]);
+        supps.forEach((sData: any) => {
+          registeredCodes.add(sData.unitCode);
+          const ts = sData.registeredAt?.toDate ? sData.registeredAt.toDate() : null;
+          regList.push({
+            dateStr: ts ? ts.toLocaleDateString() : 'Recent',
+            sortKey: ts ? ts.getTime() : Date.now(),
+            unitCode: sData.unitCode,
+            unitName: sData.unitName
+          });
         });
       } catch (e) {
-        console.warn("Could not read studentSupplementaries:", e);
+        console.warn('Could not read studentSupplementaries:', e);
       }
 
+      regList.sort((a, b) => b.sortKey - a.sortKey);
       this.registeredList = regList;
-      this.availableToRegister = failedUnits.filter(u => !registeredCodes.has(u.code));
+      this.availableToRegister = Object.values(failedUnitsMap)
+        .filter(u => !registeredCodes.has(u.code))
+        .sort((a, b) => a.name.localeCompare(b.name));
 
     } catch (err) {
-      console.error("Error loading supplementary data:", err);
+      console.error('Error loading supplementary data:', err);
+      this.loadError = 'Failed to load supplementary units. Please check your network or try again.';
     } finally {
-      this.isLoadingEligible = false;
-      this.isLoadingRegistered = false;
+      this.isLoading = false;
+      this.cdr.detectChanges();
     }
   }
 
   async registerSupplementary(unit: EligibleUnit) {
-    if (!confirm(`Register for supplementary exam in ${unit.name} (${unit.code})?\n\nSupplementary registration is free (KES 0).`)) return;
+    if (this.busyCode) return;
+
+    const ok = await this.confirmDialog(
+      'Register Supplementary',
+      `Register for supplementary exam in ${unit.name} (${unit.code})? Supplementary registration is free (KES 0).`
+    );
+    if (!ok) return;
+
+    this.busyCode = unit.code;
+    this.cdr.detectChanges();
 
     try {
-      await setDoc(doc(this.firestore, "studentSupplementaries", `${this.currentUserUid}_${unit.code}`), {
+      // Firestore document IDs cannot contain "/"
+      const safeCode = unit.code.replace(/\//g, '-');
+
+      await setDoc(doc(this.firestore, 'studentSupplementaries', `${this.currentUserUid}_${safeCode}`), {
         studentUid: this.currentUserUid,
         unitCode: unit.code,
         unitName: unit.name,
-        type: "Supplementary Unit",
+        type: 'Supplementary Unit',
         feeCharged: 0,
-        status: "Registered",
+        status: 'Registered',
         registeredAt: serverTimestamp()
       });
 
-      alert(`Successfully registered for ${unit.name} supplementary examination!`);
-      await this.loadEligibleAndRegisteredSupplementaries();
+      await this.showAlert('Registered', `Successfully registered for ${unit.name} supplementary examination!`);
     } catch (err: any) {
-      console.error("Error booking supplementary:", err);
-      alert(`Error: ${err.message}`);
+      console.error('Error booking supplementary:', err);
+      await this.showAlert('Error', err?.message || 'Could not register the supplementary unit.');
+    } finally {
+      this.busyCode = null;
+      await this.loadEligibleAndRegisteredSupplementaries();
     }
+  }
+
+  private async confirmDialog(header: string, message: string): Promise<boolean> {
+    const alert = await this.alertCtrl.create({
+      header,
+      message,
+      buttons: [
+        { text: 'Cancel', role: 'cancel' },
+        { text: 'Register', role: 'confirm' }
+      ]
+    });
+    await alert.present();
+    const { role } = await alert.onDidDismiss();
+    return role === 'confirm';
+  }
+
+  private async showAlert(header: string, message: string) {
+    const alert = await this.alertCtrl.create({ header, message, buttons: ['OK'] });
+    await alert.present();
   }
 }

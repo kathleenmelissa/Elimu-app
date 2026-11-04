@@ -1,4 +1,4 @@
-import { Component, OnInit, inject, ChangeDetectorRef } from '@angular/core';
+import { Component, inject, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink, RouterLinkActive } from '@angular/router';
@@ -8,13 +8,21 @@ import {
   IonButtons, IonMenuButton, IonSpinner
 } from '@ionic/angular';
 import { addIcons } from 'ionicons';
-import { 
-  schoolOutline, bookOutline, businessOutline, timeOutline, 
-  documentTextOutline, readerOutline, checkmarkCircleOutline, 
-  folderOpenOutline, statsChartOutline, logOutOutline 
+import {
+  schoolOutline, bookOutline, businessOutline, timeOutline,
+  documentTextOutline, readerOutline, checkmarkCircleOutline,
+  folderOpenOutline, statsChartOutline, logOutOutline
 } from 'ionicons/icons';
-import { Auth, signOut } from '@angular/fire/auth';
-import { Firestore, doc, getDoc, setDoc, collection, getDocs, serverTimestamp } from '@angular/fire/firestore';
+import { Auth, User, onAuthStateChanged, signOut } from '@angular/fire/auth';
+import {
+  Firestore, doc, getDoc, setDoc, collection, getDocs, serverTimestamp
+} from '@angular/fire/firestore';
+
+interface SubjectRow {
+  name: string;
+  teacher: string;
+  selected: boolean;
+}
 
 @Component({
   selector: 'app-student-subjects',
@@ -27,7 +35,7 @@ import { Firestore, doc, getDoc, setDoc, collection, getDocs, serverTimestamp } 
   ],
   template: `
     <ion-split-pane content-id="student-main-content">
-      
+
       <!-- Student Sidebar Navigation Menu -->
       <ion-menu content-id="student-main-content" menuId="student-menu" side="start">
         <ion-header>
@@ -113,7 +121,11 @@ import { Firestore, doc, getDoc, setDoc, collection, getDocs, serverTimestamp } 
               Loading registered and available subjects...
             </div>
 
-            <form (submit)="saveSubjectSelections($event)" *ngIf="!isLoading">
+            <div *ngIf="!isLoading && loadError" class="empty-state error-text">
+              {{ loadError }}
+            </div>
+
+            <form (submit)="saveSubjectSelections($event)" *ngIf="!isLoading && !loadError">
               <div class="subject-list">
                 <div *ngIf="subjects.length === 0" class="empty-state">
                   No subjects configured for {{ studentClass }} yet.
@@ -132,9 +144,9 @@ import { Firestore, doc, getDoc, setDoc, collection, getDocs, serverTimestamp } 
                 </div>
               </div>
 
-              <button type="submit" class="btn-primary" [disabled]="isSaving">
+              <button type="submit" class="btn-primary" [disabled]="isSaving || subjects.length === 0">
                 <ion-spinner name="crescent" *ngIf="isSaving" class="spinner-btn"></ion-spinner>
-                {{ isSaving ? 'Updating Selections & Fees...' : "Save Changes & Update Term Fees" }}
+                {{ isSaving ? 'Updating Selections & Fees...' : 'Save Changes & Update Term Fees' }}
               </button>
             </form>
           </div>
@@ -144,7 +156,6 @@ import { Firestore, doc, getDoc, setDoc, collection, getDocs, serverTimestamp } 
     </ion-split-pane>
   `,
   styles: [`
-    /* Sidebar Styling */
     ion-menu { --width: 260px; }
     .sidebar-toolbar { --background: #e0e5ec; --color: #0f3cd1; padding: 6px 12px; }
     .brand-container { display: flex; align-items: center; gap: 10px; width: 100%; }
@@ -169,21 +180,21 @@ import { Firestore, doc, getDoc, setDoc, collection, getDocs, serverTimestamp } 
     }
     .logout-item { margin-top: 12px; }
 
-    /* Main Toolbar & Layout */
     .header-gradient-toolbar { --background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 50%, #3b82f6 100%); --color: #ffffff; }
     .menu-btn { color: #ffffff; }
     .main-content-wrapper { --background: #f8fafc; }
-    
+
     .dashboard-body { padding: 24px; max-width: 850px; margin: 0 auto; width: 100%; box-sizing: border-box; }
     .card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 2rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
-    
+
     .card-title-group { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 1.5rem; }
     .icon-header-badge { width: 42px; height: 42px; background: #eff6ff; color: #2563eb; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
-    
+
     h2 { font-size: 18px; font-weight: 700; color: #0f172a; margin: 0 0 4px 0; }
     p { font-size: 13px; color: #64748b; margin: 0; line-height: 1.4; }
 
     .loading-state, .empty-state { text-align: center; color: #64748b; padding: 2rem; font-size: 14px; }
+    .error-text { color: #dc2626; }
     .spinner { width: 24px; height: 24px; vertical-align: middle; margin-right: 8px; }
     .spinner-btn { width: 18px; height: 18px; vertical-align: middle; margin-right: 8px; }
 
@@ -199,20 +210,22 @@ import { Firestore, doc, getDoc, setDoc, collection, getDocs, serverTimestamp } 
     .btn-primary:disabled { opacity: 0.7; cursor: not-allowed; }
   `]
 })
-export class RegisterUnitsPage implements OnInit {
+export class RegisterUnitsPage {
   studentClass = '';
   studentAdmissionNo = '';
   studentName = '';
-  subjects: { name: string; teacher: string; selected: boolean }[] = [];
-  
+  subjects: SubjectRow[] = [];
+
   isLoading = true;
   isSaving = false;
+  loadError = '';
 
   private auth = inject(Auth);
   private firestore = inject(Firestore);
   private cdr = inject(ChangeDetectorRef);
   private router = inject(Router);
-  private FEE_PER_UNIT = 10000;
+
+  private readonly FEE_PER_UNIT = 10000; // KES 10,000 per registered unit
 
   constructor() {
     addIcons({
@@ -222,8 +235,30 @@ export class RegisterUnitsPage implements OnInit {
     });
   }
 
-  async ngOnInit() {
-    const user = this.auth.currentUser;
+  // Ionic caches pages, so this runs every time the page is shown (including the
+  // first time) and always loads the CURRENTLY logged-in student's data.
+  async ionViewWillEnter() {
+    await this.loadPage();
+  }
+
+  // Waits for Firebase to restore the session (auth.currentUser can be null at startup)
+  private waitForUser(): Promise<User | null> {
+    return new Promise(resolve => {
+      const unsub = onAuthStateChanged(this.auth, user => {
+        unsub();
+        resolve(user);
+      });
+    });
+  }
+
+  private async loadPage() {
+    this.isLoading = true;
+    this.loadError = '';
+    this.subjects = [];
+    this.studentClass = '';
+    this.cdr.detectChanges();
+
+    const user = await this.waitForUser();
     if (!user) {
       this.isLoading = false;
       this.router.navigate(['/login']);
@@ -233,18 +268,19 @@ export class RegisterUnitsPage implements OnInit {
     try {
       const studentSnap = await getDoc(doc(this.firestore, 'students', user.uid));
       if (!studentSnap.exists()) {
-        this.isLoading = false;
+        this.loadError = 'Student profile not found.';
         return;
       }
 
-      const studentData = studentSnap.data();
-      this.studentClass = studentData['className'] || studentData['class'] || 'Form 1';
-      this.studentAdmissionNo = studentData['admissionNumber'] || studentData['admissionNo'] || 'N/A';
-      this.studentName = studentData['fullName'] || studentData['name'] || 'Student';
+      const s = studentSnap.data();
+      this.studentClass = s['className'] || s['class'] || 'Form 1';
+      this.studentAdmissionNo = s['admissionNumber'] || s['admissionNo'] || s['admNo'] || s['regNumber'] || 'N/A';
+      this.studentName = s['fullName'] || s['name'] || 'Student';
 
       await this.loadSubjectsAndRegistrations(user.uid);
     } catch (err) {
-      console.error("Error loading student profile:", err);
+      console.error('Error loading student profile:', err);
+      this.loadError = 'Failed to load subjects.';
     } finally {
       this.isLoading = false;
       this.cdr.detectChanges();
@@ -252,40 +288,83 @@ export class RegisterUnitsPage implements OnInit {
   }
 
   async loadSubjectsAndRegistrations(studentUid: string) {
+    // 1. Units this student has already registered
     const regSnap = await getDoc(doc(this.firestore, 'studentSubjects', studentUid));
     const registeredSubjects: string[] = regSnap.exists() ? (regSnap.data()['selectedSubjects'] || []) : [];
+    const registeredLower = new Set(registeredSubjects.map(s => String(s).trim().toLowerCase()));
 
+    // 2. Subjects, timetable and teachers
     const [timetableSnap, subjectsSnap, teachersSnap] = await Promise.all([
       getDocs(collection(this.firestore, 'timetable')),
       getDocs(collection(this.firestore, 'subjects')),
-      getDocs(collection(this.firestore, 'teachers')).catch(() => ({ forEach: () => {} }))
+      getDocs(collection(this.firestore, 'teachers')).catch(() => null)
     ]);
 
+    // 3. Build subject -> teacher map (same order of precedence as the website)
     const teacherMap: { [key: string]: string } = {};
-    teachersSnap.forEach((docSnap: any) => {
+
+    teachersSnap?.forEach((docSnap: any) => {
       const t = docSnap.data();
       const fullName = t['fullName'] || t['name'] || `${t['firstName'] || ''} ${t['lastName'] || ''}`.trim();
-      if (fullName && t['subject']) teacherMap[t['subject'].trim().toLowerCase()] = fullName;
+      if (!fullName) return;
+
+      if (Array.isArray(t['subjects'])) {
+        t['subjects'].forEach((sub: any) => {
+          const n = typeof sub === 'string' ? sub : sub?.name;
+          if (n) teacherMap[n.trim().toLowerCase()] = fullName;
+        });
+      }
+      if (t['subject']) {
+        teacherMap[String(t['subject']).trim().toLowerCase()] = fullName;
+      }
+    });
+
+    timetableSnap.forEach((docSnap: any) => {
+      const t = docSnap.data();
+      const tClass = (t['className'] || t['class'] || '').trim();
+      const subName = (t['subject'] || t['name'] || t['title'] || '').trim();
+      const teacherVal = t['teacher'] || t['teacherName'] || t['instructor'] || t['lecturer'] || t['staffName'];
+
+      if (subName && teacherVal) {
+        const subKey = subName.toLowerCase();
+        teacherMap[subKey] = teacherVal;
+        if (tClass) teacherMap[`${tClass.toLowerCase()}_${subKey}`] = teacherVal;
+      }
     });
 
     subjectsSnap.forEach((docSnap: any) => {
       const sub = docSnap.data();
       const subName = (sub['subjectName'] || sub['name'] || sub['title'] || '').trim();
-      const teacherVal = sub['teacher'] || sub['teacherName'];
+      const teacherVal = sub['teacher'] || sub['teacherName'] || sub['instructor'];
       if (subName && teacherVal) teacherMap[subName.toLowerCase()] = teacherVal;
     });
 
-    const loadedList: { name: string; teacher: string; selected: boolean }[] = [];
+    // 4. Build the list, filtered to this student's class
+    const classLower = this.studentClass.toLowerCase();
+    const loadedList: SubjectRow[] = [];
+
     subjectsSnap.forEach((docSnap: any) => {
       const sub = docSnap.data();
-      const subName = sub['subjectName'] || sub['name'] || sub['title'];
+      const subClass = (sub['className'] || sub['class'] || '').trim();
+
+      if (subClass && classLower && subClass.toLowerCase() !== classLower) return;
+
+      const subName = (sub['subjectName'] || sub['name'] || sub['title'] || '').trim();
       if (!subName) return;
 
-      const isChecked = registeredSubjects.includes(subName);
+      const subLower = subName.toLowerCase();
+      const classSubKey = classLower ? `${classLower}_${subLower}` : '';
+
+      const teacher =
+        sub['teacher'] || sub['teacherName'] || sub['instructor'] ||
+        (classSubKey ? teacherMap[classSubKey] : null) ||
+        teacherMap[subLower] ||
+        'Not Assigned';
+
       loadedList.push({
         name: subName,
-        teacher: sub['teacher'] || teacherMap[subName.toLowerCase()] || 'Not Assigned',
-        selected: isChecked
+        teacher,
+        selected: registeredLower.has(subLower)
       });
     });
 
@@ -294,13 +373,18 @@ export class RegisterUnitsPage implements OnInit {
 
   async saveSubjectSelections(e: Event) {
     e.preventDefault();
-    const user = this.auth.currentUser;
-    if (!user) return;
+
+    const user = this.auth.currentUser ?? (await this.waitForUser());
+    if (!user) {
+      this.router.navigate(['/login']);
+      return;
+    }
 
     this.isSaving = true;
     this.cdr.detectChanges();
 
     try {
+      // 1. Save selected units
       const selectedSubjects = this.subjects.filter(s => s.selected).map(s => s.name);
 
       await setDoc(doc(this.firestore, 'studentSubjects', user.uid), {
@@ -308,37 +392,60 @@ export class RegisterUnitsPage implements OnInit {
         admissionNumber: this.studentAdmissionNo,
         studentName: this.studentName,
         className: this.studentClass,
-        selectedSubjects: selectedSubjects,
+        selectedSubjects,
         updatedAt: serverTimestamp()
       }, { merge: true });
 
+      // 2. Tuition = units x KES 10,000
       const unitsCount = selectedSubjects.length;
       const tuitionFee = unitsCount * this.FEE_PER_UNIT;
 
+      // 3. Preserve hostel fee and amount paid
       const balanceRef = doc(this.firestore, 'studentAccountBalances', user.uid);
       const balSnap = await getDoc(balanceRef);
 
-      let hostelFee = balSnap.exists() ? Number(balSnap.data()['hostelFee'] || 0) : 0;
-      let amountPaid = balSnap.exists() ? Number(balSnap.data()['amountPaid'] || 0) : 0;
+      let hostelFee = 0;
+      let amountPaid = 0;
+
+      if (balSnap.exists()) {
+        const balData = balSnap.data();
+        hostelFee = Number(balData['hostelFee'] || 0);
+        amountPaid = Number(balData['amountPaid'] || 0);
+      } else {
+        // No balance record yet: fall back to the student's dorm booking
+        const dormSnap = await getDoc(doc(this.firestore, 'studentDormBookings', user.uid));
+        if (dormSnap.exists()) {
+          hostelFee = Number(dormSnap.data()['feeAmount'] || 0);
+        }
+      }
+
       const totalBill = tuitionFee + hostelFee;
       const feeBalance = totalBill - amountPaid;
 
+      // 4. Update the balance record that the Fees page and accountant read
       await setDoc(balanceRef, {
         studentUid: user.uid,
         admissionNumber: this.studentAdmissionNo,
         studentName: this.studentName,
         className: this.studentClass,
-        totalBill: totalBill,
-        amountPaid: amountPaid,
+        totalBill,
+        amountPaid,
         balance: feeBalance,
-        tuitionFee: tuitionFee,
-        hostelFee: hostelFee,
+        tuitionFee,
+        hostelFee,
         updatedAt: serverTimestamp()
       }, { merge: true });
 
-      alert(`Subject updates saved successfully!\n\nRegistered Units: ${unitsCount}\nTuition Fee: KES ${tuitionFee.toLocaleString()}`);
+      alert(
+        `Subject updates saved successfully!\n\n` +
+        `Registered Units: ${unitsCount} (${unitsCount} × KES 10,000)\n` +
+        `Tuition Fee: KES ${tuitionFee.toLocaleString()}\n` +
+        `Total Bill: KES ${totalBill.toLocaleString()}`
+      );
+
       await this.loadSubjectsAndRegistrations(user.uid);
     } catch (err: any) {
+      console.error('Error updating subjects & fees:', err);
       alert(`Error: ${err.message}`);
     } finally {
       this.isSaving = false;
@@ -351,7 +458,7 @@ export class RegisterUnitsPage implements OnInit {
       await signOut(this.auth);
       this.router.navigate(['/login']);
     } catch (err) {
-      console.error("Logout error:", err);
+      console.error('Logout error:', err);
     }
   }
 }
