@@ -1,15 +1,17 @@
-import { Component, OnInit, inject, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, inject, ChangeDetectorRef, isDevMode } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink, RouterLinkActive } from '@angular/router';
+import { HttpClient, HttpClientModule } from '@angular/common/http';
+import { firstValueFrom } from 'rxjs';
 import {
   IonSplitPane, IonMenu, IonHeader, IonToolbar, IonTitle,
   IonContent, IonList, IonItem, IonLabel, IonIcon,
-  IonButtons, IonMenuButton, IonSpinner, MenuController
+  IonButtons, IonMenuButton, IonSpinner, MenuController, ToastController
 } from '@ionic/angular';
 import { addIcons } from 'ionicons';
 import {
-  walletOutline, logOutOutline, schoolOutline, receiptOutline, statsChartOutline
+  walletOutline, logOutOutline, schoolOutline, receiptOutline, statsChartOutline, searchOutline, closeOutline
 } from 'ionicons/icons';
 import { Auth, User, onAuthStateChanged, signOut } from '@angular/fire/auth';
 import { Firestore, collection, getDocs, doc, setDoc, addDoc, onSnapshot, query, where, serverTimestamp } from '@angular/fire/firestore';
@@ -18,6 +20,7 @@ interface StudentAccount {
   uid: string;
   admissionNumber: string;
   studentName: string;
+  email?: string;
   unitsCount: number;
   tuitionFee: number;
   hostelName: string | null;
@@ -40,11 +43,20 @@ interface PendingTransaction {
   amount: number;
 }
 
+interface StudentTransaction {
+  id: string;
+  dateStr: string;
+  amount: number;
+  paymentMode: string;
+  transactionCode: string;
+  status: string; // e.g., 'Approved', 'Pending VC Approval', 'Awaiting Payment'
+}
+
 @Component({
   selector: 'app-accountant-dashboard',
   standalone: true,
   imports: [
-    CommonModule, FormsModule, RouterLink, RouterLinkActive,
+    CommonModule, FormsModule, RouterLink, RouterLinkActive, HttpClientModule,
     IonSplitPane, IonMenu, IonHeader, IonToolbar, IonTitle,
     IonContent, IonList, IonItem, IonLabel, IonIcon,
     IonButtons, IonMenuButton, IonSpinner
@@ -112,7 +124,23 @@ interface PendingTransaction {
 
           <!-- Student Accounts Table Card -->
           <div class="card">
-            <div class="card-title">Student Fee Accounts & Unit Billing</div>
+            <div class="card-header-flex">
+              <div class="card-title" style="margin-bottom: 0;">Student Fee Accounts & Unit Billing</div>
+              
+              <!-- Search & Filter Bar -->
+              <div class="search-box">
+                <ion-icon name="search-outline"></ion-icon>
+                <input type="text" [(ngModel)]="searchQuery" placeholder="Search by name or adm no..." />
+                <button *ngIf="searchQuery" class="clear-search-btn" (click)="searchQuery = ''">
+                  <ion-icon name="close-outline"></ion-icon>
+                </button>
+              </div>
+            </div>
+
+            <p style="font-size: 0.85rem; color: #64748b; margin-top: 0.5rem; margin-bottom: 1rem;">
+              Click on any student's name or admission number to view their complete transaction history.
+            </p>
+
             <div class="table-container">
               <table>
                 <thead>
@@ -125,7 +153,7 @@ interface PendingTransaction {
                     <th>Total Bill (KES)</th>
                     <th>Amount Paid (KES)</th>
                     <th>Fee Balance (KES)</th>
-                    <th>Record Payment (Mode & Ref)</th>
+                    <th>Record Payment (Paystack / Manual)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -135,13 +163,21 @@ interface PendingTransaction {
                       Loading student financial accounts...
                     </td>
                   </tr>
-                  <tr *ngIf="!isLoadingStudents && studentAccounts.length === 0">
-                    <td colspan="9" style="text-align: center; color: var(--text-muted); padding: 2rem;">No students found in the database.</td>
+                  <tr *ngIf="!isLoadingStudents && filteredStudents.length === 0">
+                    <td colspan="9" style="text-align: center; color: var(--text-muted); padding: 2rem;">No matching students found.</td>
                   </tr>
                   <ng-container *ngIf="!isLoadingStudents">
-                    <tr *ngFor="let student of studentAccounts">
-                      <td><strong>{{ student.admissionNumber }}</strong></td>
-                      <td>{{ student.studentName }}</td>
+                    <tr *ngFor="let student of filteredStudents">
+                      <td>
+                        <a class="clickable-student" (click)="viewStudentTransactions(student)">
+                          <strong>{{ student.admissionNumber }}</strong>
+                        </a>
+                      </td>
+                      <td>
+                        <a class="clickable-student" (click)="viewStudentTransactions(student)">
+                          {{ student.studentName }}
+                        </a>
+                      </td>
                       <td>{{ student.unitsCount }} Units</td>
                       <td>KES {{ student.tuitionFee.toLocaleString() }}</td>
                       <td>
@@ -155,16 +191,22 @@ interface PendingTransaction {
                         KES {{ student.balance.toLocaleString() }}
                       </td>
                       <td>
-                        <div style="display: flex; flex-direction: column; gap: 0.3rem; min-width: 170px;">
+                        <div style="display: flex; flex-direction: column; gap: 0.3rem; min-width: 180px;">
                           <select [(ngModel)]="student.paymentMode">
-                            <option value="M-Pesa">M-Pesa</option>
+                            <option value="Paystack">Paystack (M-Pesa / Card)</option>
                             <option value="Bank">Bank Deposit</option>
                             <option value="Cheque">Cheque</option>
                             <option value="Bursary">Bursary</option>
                           </select>
-                          <input type="text" [(ngModel)]="student.referenceCode" placeholder="Reference / Trans ID">
+                          
+                          <input *ngIf="student.paymentMode !== 'Paystack'" type="text" [(ngModel)]="student.referenceCode" placeholder="Reference / Trans ID">
+                          <input *ngIf="student.paymentMode === 'Paystack'" type="email" [(ngModel)]="student.email" placeholder="Student Email (required)">
+                          
                           <input type="number" class="amount-input" [(ngModel)]="student.paymentAmount" placeholder="Amount (KES)" min="0">
-                          <button class="btn-primary" (click)="submitPaymentForApproval(student)">Submit for VC Approval</button>
+                          
+                          <button class="btn-primary" (click)="submitPayment(student)" [disabled]="isProcessing">
+                            {{ student.paymentMode === 'Paystack' ? 'Initialize Paystack' : 'Submit for VC Approval' }}
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -178,7 +220,7 @@ interface PendingTransaction {
           <div class="card">
             <div class="card-title">Pending Fee Transactions (Awaiting VC Approval)</div>
             <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 1rem;">
-              These payments have been submitted by the accountant and are currently on hold pending Vice Chancellor authorization.
+              These payments have been submitted and are currently on hold pending Vice Chancellor authorization.
             </p>
             <div class="table-container">
               <table>
@@ -220,6 +262,76 @@ interface PendingTransaction {
           </div>
 
         </div>
+
+        <!-- Student Transaction History Modal / Overlay View -->
+        <div class="modal-backdrop" *ngIf="selectedStudentForHistory">
+          <div class="modal-card">
+            <div class="modal-header">
+              <div>
+                <h3>Transaction History</h3>
+                <span class="modal-sub">{{ selectedStudentForHistory.studentName }} ({{ selectedStudentForHistory.admissionNumber }})</span>
+              </div>
+              <button class="modal-close-btn" (click)="closeStudentHistory()">
+                <ion-icon name="close-outline"></ion-icon>
+              </button>
+            </div>
+
+            <div class="modal-body">
+              <div class="summary-pills">
+                <div class="pill">Total Bill: <strong>KES {{ selectedStudentForHistory.totalBill.toLocaleString() }}</strong></div>
+                <div class="pill">Amount Paid: <strong style="color: var(--success);">KES {{ selectedStudentForHistory.amountPaid.toLocaleString() }}</strong></div>
+                <div class="pill">Balance: <strong [style.color]="selectedStudentForHistory.balance > 0 ? 'var(--danger)' : 'var(--success)'">KES {{ selectedStudentForHistory.balance.toLocaleString() }}</strong></div>
+              </div>
+
+              <div class="table-container" style="max-height: 350px; overflow-y: auto;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Mode</th>
+                      <th>Reference / Code</th>
+                      <th>Amount (KES)</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr *ngIf="isLoadingHistory">
+                      <td colspan="5" style="text-align: center; padding: 2rem;">
+                        <ion-spinner name="crescent" style="width: 18px; height: 18px; vertical-align: middle;"></ion-spinner>
+                        Loading records...
+                      </td>
+                    </tr>
+                    <tr *ngIf="!isLoadingHistory && studentTransactionsHistory.length === 0">
+                      <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">No transaction history found for this student.</td>
+                    </tr>
+                    <ng-container *ngIf="!isLoadingHistory">
+                      <tr *ngFor="let t of studentTransactionsHistory">
+                        <td>{{ t.dateStr }}</td>
+                        <td>{{ t.paymentMode }}</td>
+                        <td><code>{{ t.transactionCode }}</code></td>
+                        <td><strong>KES {{ t.amount.toLocaleString() }}</strong></td>
+                        <td>
+                          <span [ngClass]="{
+                            'badge-approved': t.status === 'Approved',
+                            'badge-pending': t.status === 'Pending VC Approval',
+                            'badge-other': t.status !== 'Approved' && t.status !== 'Pending VC Approval'
+                          }">
+                            {{ t.status }}
+                          </span>
+                        </td>
+                      </tr>
+                    </ng-container>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="modal-footer">
+              <button class="btn-primary" (click)="closeStudentHistory()">Close</button>
+            </div>
+          </div>
+        </div>
+
       </ion-content>
 
     </ion-split-pane>
@@ -248,7 +360,16 @@ interface PendingTransaction {
     .stat-value { font-size: 1.5rem; font-weight: 700; color: #0F172A; }
 
     .card { background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 10px; padding: 2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.02); margin-bottom: 1.5rem; }
-    .card-title { font-size: 1.1rem; font-weight: 600; color: #0F172A; margin-bottom: 1rem; }
+    .card-header-flex { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+    .card-title { font-size: 1.1rem; font-weight: 600; color: #0F172A; }
+
+    .search-box { display: flex; align-items: center; background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; padding: 0.35rem 0.65rem; gap: 6px; width: 280px; }
+    .search-box ion-icon { color: #64748B; font-size: 16px; }
+    .search-box input { border: none; background: transparent; outline: none; font-size: 0.85rem; width: 100%; color: #1E293B; }
+    .clear-search-btn { background: none; border: none; cursor: pointer; display: flex; align-items: center; color: #64748B; padding: 0; }
+
+    .clickable-student { color: #2563EB; cursor: pointer; text-decoration: none; }
+    .clickable-student:hover { text-decoration: underline; }
 
     .table-container { width: 100%; overflow-x: auto; border: 1px solid #E2E8F0; border-radius: 10px; margin-top: 1rem; }
     table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem; }
@@ -258,27 +379,61 @@ interface PendingTransaction {
 
     .btn-primary { background-color: #2563EB; color: white; border: none; padding: 0.45rem 0.85rem; border-radius: 6px; font-weight: 600; font-size: 0.8rem; cursor: pointer; transition: background 0.2s; }
     .btn-primary:hover { background-color: #1D4ED8; }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
 
-    select, input[type="text"], input[type="number"] { width: 100%; padding: 0.35rem; border-radius: 4px; border: 1px solid #E2E8F0; font-size: 0.8rem; background: #FFF; color: #1E293B; }
+    select, input[type="text"], input[type="number"], input[type="email"] { width: 100%; padding: 0.35rem; border-radius: 4px; border: 1px solid #E2E8F0; font-size: 0.8rem; background: #FFF; color: #1E293B; }
+
+    /* Modal styles */
+    .modal-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.6); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem; }
+    .modal-card { background: #FFFFFF; border-radius: 12px; width: 100%; max-width: 750px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); overflow: hidden; display: flex; flex-direction: column; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 1.25rem 1.5rem; background: #F8FAFC; border-bottom: 1px solid #E2E8F0; }
+    .modal-header h3 { margin: 0; font-size: 1.1rem; color: #0F172A; font-weight: 700; }
+    .modal-sub { font-size: 0.85rem; color: #64748B; }
+    .modal-close-btn { background: none; border: none; font-size: 20px; color: #64748B; cursor: pointer; display: flex; align-items: center; }
+    .modal-body { padding: 1.5rem; }
+    .modal-footer { padding: 1rem 1.5rem; background: #F8FAFC; border-top: 1px solid #E2E8F0; display: flex; justify-content: flex-end; }
+    
+    .summary-pills { display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .pill { background: #F1F5F9; padding: 0.5rem 0.85rem; border-radius: 6px; font-size: 0.85rem; color: #334155; border: 1px solid #E2E8F0; }
+
+    .badge-approved { color: #059669; background: #D1FAE5; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 600; font-size: 0.75rem; }
+    .badge-pending { color: #D97706; background: #FEF3C7; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 600; font-size: 0.75rem; }
+    .badge-other { color: #475569; background: #F1F5F9; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 600; font-size: 0.75rem; }
   `]
 })
 export class AccountantDashboardPage implements OnInit {
   totalStudentsCount = 0;
   studentAccounts: StudentAccount[] = [];
   pendingTransactions: PendingTransaction[] = [];
+  
+  // Search state
+  searchQuery = '';
+
+  // History modal state
+  selectedStudentForHistory: StudentAccount | null = null;
+  studentTransactionsHistory: StudentTransaction[] = [];
+  isLoadingHistory = false;
+
   isLoadingStudents = true;
   isLoadingPending = true;
+  isProcessing = false;
 
   private auth = inject(Auth);
   private firestore = inject(Firestore);
+  private http = inject(HttpClient);
   private cdr = inject(ChangeDetectorRef);
   private router = inject(Router);
   private menuCtrl = inject(MenuController);
+  private toastCtrl = inject(ToastController);
 
   private FEE_PER_UNIT = 10000;
 
+  private readonly paystackInitUrl = isDevMode()
+    ? 'http://127.0.0.1:5001/elimu-database/us-central1/paystackInitialize'
+    : 'https://us-central1-elimu-database.cloudfunctions.net/paystackInitialize';
+
   constructor() {
-    addIcons({ walletOutline, logOutOutline, schoolOutline, receiptOutline, statsChartOutline });
+    addIcons({ walletOutline, logOutOutline, schoolOutline, receiptOutline, statsChartOutline, searchOutline, closeOutline });
   }
 
   async ngOnInit() {
@@ -310,6 +465,18 @@ export class AccountantDashboardPage implements OnInit {
         resolve(user);
       });
     });
+  }
+
+  // Getter to dynamically filter student accounts based on search query
+  get filteredStudents(): StudentAccount[] {
+    if (!this.searchQuery || !this.searchQuery.trim()) {
+      return this.studentAccounts;
+    }
+    const q = this.searchQuery.toLowerCase().trim();
+    return this.studentAccounts.filter(s => 
+      s.studentName.toLowerCase().includes(q) || 
+      s.admissionNumber.toLowerCase().includes(q)
+    );
   }
 
   async loadStudentFinancials() {
@@ -369,6 +536,7 @@ export class AccountantDashboardPage implements OnInit {
         const student = studentsMap[uid];
         const admissionNumber = student.admissionNumber || student.admissionNo || student.admNo || student.regNumber || "N/A";
         const studentName = student.fullName || student.name || `${student.firstName || ''} ${student.lastName || ''}`.trim() || "Student";
+        const email = student.email || student.studentEmail || '';
 
         let unitsCount = studentUnitsMap[uid];
         if (unitsCount === undefined) {
@@ -404,6 +572,7 @@ export class AccountantDashboardPage implements OnInit {
           uid,
           admissionNumber,
           studentName,
+          email,
           unitsCount,
           tuitionFee,
           hostelName,
@@ -411,7 +580,7 @@ export class AccountantDashboardPage implements OnInit {
           totalBill,
           amountPaid,
           balance,
-          paymentMode: 'M-Pesa',
+          paymentMode: 'Paystack',
           referenceCode: '',
           paymentAmount: ''
         });
@@ -440,8 +609,8 @@ export class AccountantDashboardPage implements OnInit {
           dateStr,
           admissionNumber: txn.admissionNumber || 'N/A',
           studentName: txn.studentName || 'Student',
-          paymentMode: txn.paymentMode || 'M-Pesa',
-          transactionCode: txn.transactionCode || '',
+          paymentMode: txn.paymentMode || 'Paystack',
+          transactionCode: txn.reference || txn.transactionCode || '',
           amount: Number(txn.amount) || 0
         });
       });
@@ -451,38 +620,130 @@ export class AccountantDashboardPage implements OnInit {
     });
   }
 
-  async submitPaymentForApproval(student: StudentAccount) {
-    if (!student.paymentAmount || Number(student.paymentAmount) <= 0) {
-      alert("Please enter a valid payment amount.");
-      return;
-    }
-    if (!student.referenceCode || !student.referenceCode.trim()) {
-      alert("Please provide a payment reference number or transaction ID.");
-      return;
-    }
+  // Open student past transactions modal
+  async viewStudentTransactions(student: StudentAccount) {
+    this.selectedStudentForHistory = student;
+    this.isLoadingHistory = true;
+    this.studentTransactionsHistory = [];
+    this.cdr.detectChanges();
 
     try {
-      await addDoc(collection(this.firestore, "feeTransactions"), {
-        studentUid: student.uid,
-        admissionNumber: student.admissionNumber,
-        studentName: student.studentName,
-        amount: Number(student.paymentAmount),
-        paymentMode: student.paymentMode,
-        transactionCode: student.referenceCode.trim().toUpperCase(),
-        status: "Pending VC Approval",
-        submittedByAccountant: this.auth.currentUser?.email || 'accountant',
-        submittedAt: serverTimestamp()
+      // Query feeTransactions collection matching studentUid or admissionNumber
+      const q = query(collection(this.firestore, "feeTransactions"), where("studentUid", "==", student.uid));
+      const snap = await getDocs(q);
+      
+      const history: StudentTransaction[] = [];
+      snap.forEach(d => {
+        const tData: any = d.data();
+        const dateStr = tData.submittedAt?.toDate ? tData.submittedAt.toDate().toLocaleString() : "Recent";
+        history.push({
+          id: d.id,
+          dateStr,
+          amount: Number(tData.amount) || 0,
+          paymentMode: tData.paymentMode || 'Paystack',
+          transactionCode: tData.reference || tData.transactionCode || 'N/A',
+          status: tData.status || 'Pending'
+
+        });
       });
 
-      alert(`Transaction submitted successfully!\n\nMode: ${student.paymentMode}\nRef: ${student.referenceCode}\nAmount: KES ${Number(student.paymentAmount).toLocaleString()}\n\nIt is now pending approval from the Vice Chancellor before updating the student balance.`);
-      
-      student.referenceCode = '';
-      student.paymentAmount = '';
+      this.studentTransactionsHistory = history;
+    } catch (err) {
+      console.error("Error fetching student transaction history:", err);
+      this.presentToast("Could not load transaction history.", "danger");
+    } finally {
+      this.isLoadingHistory = false;
       this.cdr.detectChanges();
-    } catch (err: any) {
-      console.error("Error submitting transaction:", err);
-      alert(`Error: ${err.message}`);
     }
+  }
+
+  closeStudentHistory() {
+    this.selectedStudentForHistory = null;
+    this.studentTransactionsHistory = [];
+  }
+
+  async submitPayment(student: StudentAccount) {
+    if (!student.paymentAmount || Number(student.paymentAmount) <= 0) {
+      this.presentToast("Please enter a valid payment amount.", "danger");
+      return;
+    }
+
+    if (student.paymentMode === 'Paystack') {
+      if (!student.email || !student.email.trim()) {
+        this.presentToast("Please enter a valid student email address for Paystack.", "danger");
+        return;
+      }
+
+      this.isProcessing = true;
+      try {
+        const payload = {
+          email: student.email.trim(),
+          amount: Number(student.paymentAmount),
+          admissionNumber: student.admissionNumber,
+          studentUid: student.uid,
+          studentName: student.studentName
+        };
+
+        const res: any = await firstValueFrom(
+          this.http.post<any>(this.paystackInitUrl, payload)
+        );
+        if (res && res.success && res.authorization_url) {
+          this.presentToast("Paystack initialized! Redirecting to payment...", "success");
+          student.email = '';
+          student.paymentAmount = '';
+          
+          window.location.href = res.authorization_url;
+        } else {
+          this.presentToast("Failed to initialize Paystack payment.", "danger");
+        }
+      } catch (err: any) {
+        console.error("Paystack Init Error:", err);
+        this.presentToast(`Paystack Error: ${err.error?.error || err.message}`, "danger");
+      } finally {
+        this.isProcessing = false;
+        this.cdr.detectChanges();
+      }
+    } else {
+      if (!student.referenceCode || !student.referenceCode.trim()) {
+        this.presentToast("Please provide a payment reference number or transaction ID.", "danger");
+        return;
+      }
+
+      this.isProcessing = true;
+      try {
+        await addDoc(collection(this.firestore, "feeTransactions"), {
+          studentUid: student.uid,
+          admissionNumber: student.admissionNumber,
+          studentName: student.studentName,
+          amount: Number(student.paymentAmount),
+          paymentMode: student.paymentMode,
+          transactionCode: student.referenceCode.trim().toUpperCase(),
+          status: "Pending VC Approval",
+          submittedByAccountant: this.auth.currentUser?.email || 'accountant',
+          submittedAt: serverTimestamp()
+        });
+
+        this.presentToast("Transaction submitted for VC approval successfully!", "success");
+        student.referenceCode = '';
+        student.paymentAmount = '';
+      } catch (err: any) {
+        console.error("Error submitting transaction:", err);
+        this.presentToast(`Error: ${err.message}`, "danger");
+      } finally {
+        this.isProcessing = false;
+        this.cdr.detectChanges();
+      }
+    }
+  }
+
+  async presentToast(message: string, color: 'success' | 'danger') {
+    const toast = await this.toastCtrl.create({
+      message,
+      duration: 3000,
+      color,
+      position: 'bottom'
+    });
+    await toast.present();
   }
 
   async logout() {
@@ -490,7 +751,7 @@ export class AccountantDashboardPage implements OnInit {
       await signOut(this.auth);
       this.router.navigate(['/login']);
     } catch (err) {
-      console.error("Logout error:", err);
+      console.log("Logout error:", err);
     }
   }
 }

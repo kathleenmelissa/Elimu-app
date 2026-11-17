@@ -1,0 +1,22 @@
+{
+  "name": "functions",
+  "description": "Cloud Functions for Firebase",
+  "scripts": {
+    "lint": "eslint .",
+    "serve": "firebase emulators:start --only functions",
+    "shell": "firebase functions:shell",
+    "start": "npm run shell",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log",
+     "dev": "set HTTPS=true&&set SSL_CRT_FILE=localhost+2.pem&&set SSL_KEY_FILE=localhost+2-key.pem&&next dev"
+  },
+  "engines": {
+    "node": "22"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "firebase-admin": "^11.8.0",
+    "firebase-functions": "^4.3.1"
+  },
+  "private": true
+}
