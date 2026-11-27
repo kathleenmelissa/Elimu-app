@@ -13,7 +13,9 @@ import {
   folderOpenOutline, timeOutline, statsChartOutline, logOutOutline, alertCircleOutline
 } from 'ionicons/icons';
 import { Auth, User, onAuthStateChanged, signOut } from '@angular/fire/auth';
-import { Firestore, doc, getDoc, getDocs, collection, setDoc, serverTimestamp } from '@angular/fire/firestore';
+import {
+  Firestore, doc, getDoc, getDocs, collection, setDoc, query, where, serverTimestamp
+} from '@angular/fire/firestore';
 
 interface StudentGradeRow {
   studentUid: string;
@@ -25,6 +27,10 @@ interface StudentGradeRow {
   finalScore: number | string;
   grade: string;
   remarks: string;
+  attendancePercentage?: number;
+  feeClearanceHold?: boolean;
+  isEligibleForExam?: boolean;
+  status?: string;
 }
 
 @Component({
@@ -137,17 +143,18 @@ interface StudentGradeRow {
                       <th>Final Score (%)</th>
                       <th>Grade</th>
                       <th>Remarks</th>
+                      <th>Clearance Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr *ngIf="isLoadingRoster">
-                      <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
+                      <td colspan="9" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
                         <ion-spinner name="crescent" style="width: 20px; height: 20px; vertical-align: middle; margin-right: 6px;"></ion-spinner>
                         Loading student roster and existing scores...
                       </td>
                     </tr>
                     <tr *ngIf="!isLoadingRoster && gradingRows.length === 0">
-                      <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
+                      <td colspan="9" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
                         No students registered in {{ selectedClass }}.
                       </td>
                     </tr>
@@ -164,9 +171,18 @@ interface StudentGradeRow {
                         <td>
                           <input type="number" min="0" max="70" class="score-input" [(ngModel)]="row.endSem" (input)="recalculateRow(row)" [name]="'endSem_' + row.studentUid" placeholder="0-70">
                         </td>
-                        <td class="center-text">{{ row.finalScore }}</td>
-                        <td class="center-text">{{ row.grade }}</td>
+                        <td class="center-text"><strong>{{ row.finalScore }}</strong></td>
+                        <td class="center-text"><strong>{{ row.grade }}</strong></td>
                         <td class="center-text">{{ row.remarks }}</td>
+                        <td class="center-text">
+                          <span *ngIf="row.status === 'Published'" class="badge-published">
+                            Published ({{ row.attendancePercentage ?? 100 | number:'1.0-0' }}% Att.)
+                          </span>
+                          <span *ngIf="row.status === 'Withheld_Pending_Clearance'" class="badge-withheld">
+                            Withheld ({{ row.feeClearanceHold ? 'Fee Balance' : 'Low Att.' }})
+                          </span>
+                          <span *ngIf="!row.status" style="color: #94a3b8; font-size: 0.8rem;">Not Saved</span>
+                        </td>
                       </tr>
                     </ng-container>
                   </tbody>
@@ -175,7 +191,7 @@ interface StudentGradeRow {
 
               <button type="submit" class="btn-primary" [disabled]="isSaving" style="margin-top: 1.5rem; width: 100%;">
                 <ion-spinner name="crescent" *ngIf="isSaving" style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;"></ion-spinner>
-                {{ isSaving ? 'Saving Grades to Database...' : 'Save All Exam Results' }}
+                {{ isSaving ? 'Verifying Clearance & Saving Grades...' : 'Save All Exam Results' }}
               </button>
             </form>
           </div>
@@ -201,7 +217,7 @@ interface StudentGradeRow {
     .menu-btn { color: #ffffff; }
     .main-content-wrapper { --background: #f8fafc; }
     
-    .content-body { padding: 2rem; max-width: 1300px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+    .content-body { padding: 2rem; max-width: 1350px; width: 100%; margin: 0 auto; box-sizing: border-box; }
     .card { background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.02); margin-bottom: 1.5rem; }
     .card-title { font-size: 1.1rem; font-weight: 600; color: #0f172a; margin-bottom: 1rem; }
 
@@ -225,6 +241,9 @@ interface StudentGradeRow {
     .center-text { text-align: center; }
 
     input.score-input { width: 85px; padding: 0.4rem; text-align: center; border-radius: 6px; border: 1px solid #cbd5e1; }
+
+    .badge-published { color: #059669; background: #D1FAE5; padding: 0.25rem 0.55rem; border-radius: 6px; font-weight: 600; font-size: 0.75rem; white-space: nowrap; }
+    .badge-withheld { color: #D97706; background: #FEF3C7; padding: 0.25rem 0.55rem; border-radius: 6px; font-weight: 600; font-size: 0.75rem; white-space: nowrap; }
   `]
 })
 export class TeacherMarksPage implements OnInit {
@@ -417,7 +436,11 @@ export class TeacherMarksPage implements OnInit {
           endSem: endSemVal,
           finalScore: existingRecord.score !== undefined ? existingRecord.score : '-',
           grade: existingRecord.grade || '-',
-          remarks: existingRecord.remarks || '-'
+          remarks: existingRecord.remarks || '-',
+          attendancePercentage: existingRecord.attendancePercentage,
+          feeClearanceHold: existingRecord.feeClearanceHold,
+          isEligibleForExam: existingRecord.isEligibleForExam,
+          status: existingRecord.status
         };
 
         this.recalculateRow(row);
@@ -468,6 +491,65 @@ export class TeacherMarksPage implements OnInit {
     return "Fail / Retake required";
   }
 
+  /**
+   * Verifies 75% attendance rule and fee balance clearance from Firestore
+   */
+  async verifyStudentEligibility(studentUid: string, subjectName: string) {
+    // 1. Check Attendance Percentage from attendanceRecords
+    let attendancePercentage = 100;
+    try {
+      const attQuery = query(
+        collection(this.firestore, "attendanceRecords"),
+        where("studentUid", "==", studentUid)
+      );
+      const attSnap = await getDocs(attQuery);
+
+      let totalSessions = 0;
+      let presentCount = 0;
+
+      attSnap.forEach(docSnap => {
+        const data: any = docSnap.data();
+        const recordSubject = data.subject || data.unitName || data.unitCode || "";
+        if (!recordSubject || recordSubject.toLowerCase() === subjectName.toLowerCase()) {
+          totalSessions++;
+          if (data.status === "Present" || data.status === "Late") {
+            presentCount++;
+          }
+        }
+      });
+
+      if (totalSessions > 0) {
+        attendancePercentage = Math.round((presentCount / totalSessions) * 100);
+      }
+    } catch (e) {
+      console.warn("Could not verify attendance records, defaulting to 100%:", e);
+    }
+
+    const meetsAttendance = attendancePercentage >= 75;
+
+    // 2. Check Fee Balance Clearance from studentAccountBalances
+    let feeBalance = 0;
+    let feeClearanceHold = false;
+    try {
+      const balanceSnap = await getDoc(doc(this.firestore, "studentAccountBalances", studentUid));
+      if (balanceSnap.exists()) {
+        const balanceData: any = balanceSnap.data();
+        feeBalance = Number(balanceData.balance || 0);
+        feeClearanceHold = feeBalance > 0;
+      }
+    } catch (e) {
+      console.warn("Could not verify fee balance, defaulting to cleared:", e);
+    }
+
+    return {
+      attendancePercentage,
+      meetsAttendance,
+      feeBalance,
+      feeClearanceHold,
+      isEligible: meetsAttendance && !feeClearanceHold
+    };
+  }
+
   async saveAllMarks(e: Event) {
     e.preventDefault();
     if (this.gradingRows.length === 0) return;
@@ -477,9 +559,15 @@ export class TeacherMarksPage implements OnInit {
 
     try {
       let savedCount = 0;
+      let withheldCount = 0;
 
       for (const row of this.gradingRows) {
         if (row.cat1 === null && row.cat2 === null && row.endSem === null) continue;
+
+        // Run OpenEduCat-inspired eligibility & clearance checks
+        const eligibility = await this.verifyStudentEligibility(row.studentUid, this.selectedSubject);
+        const status = eligibility.isEligible ? "Published" : "Withheld_Pending_Clearance";
+        if (!eligibility.isEligible) withheldCount++;
 
         const resultId = `${row.studentUid}_${this.selectedSubject.replace(/\s+/g, '_')}`;
         const resultRef = doc(this.firestore, "examResults", resultId);
@@ -496,6 +584,10 @@ export class TeacherMarksPage implements OnInit {
           score: typeof row.finalScore === 'number' ? row.finalScore : Number(row.finalScore) || 0,
           grade: row.grade,
           remarks: row.remarks,
+          attendancePercentage: eligibility.attendancePercentage,
+          feeClearanceHold: eligibility.feeClearanceHold,
+          isEligibleForExam: eligibility.isEligible,
+          status: status,
           gradedBy: this.teacherUid,
           teacherName: this.teacherFullName,
           updatedAt: serverTimestamp()
@@ -504,7 +596,11 @@ export class TeacherMarksPage implements OnInit {
         savedCount++;
       }
 
-      alert(`Successfully saved assessment records for ${savedCount} student(s)!`);
+      const summaryMsg = withheldCount > 0
+        ? `Saved ${savedCount} student(s). Note: ${withheldCount} result(s) were automatically withheld due to fee balance holds or attendance below 75%.`
+        : `Successfully saved and published assessment records for ${savedCount} student(s)!`;
+
+      alert(summaryMsg);
       await this.loadGradingRoster(this.selectedClass, this.selectedSubject);
     } catch (err: any) {
       console.error("Error saving assessment results:", err);

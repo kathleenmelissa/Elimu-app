@@ -247,7 +247,7 @@ export const routes: Routes = [
     ]
   },
 
-  // Accountant Portal (Fixed paths)
+  // Accountant Portal 
   {
     path: 'accountant',
     children: [
@@ -292,6 +292,25 @@ export const routes: Routes = [
         path: '**',
         redirectTo: 'login'
       } 
+    ]
+  },
+  //parent portal
+  {
+    path: 'parent',
+    children: [
+      {
+        path: '',
+        redirectTo: 'dashboard',
+        pathMatch: 'full'
+      },
+      {
+        path: 'dashboard',
+        loadComponent: () => import('./pages/parent-dashboard/parent-dashboard.page').then(m => m.ParentDashboardPage)
+      },
+      {
+        path: '**',
+        redirectTo: 'login'
+      }
     ]
   }
 ];

@@ -244,29 +244,51 @@ export class TeacherAttendancePage implements OnInit {
     this.isLoading = true;
     this.attendanceRecords = [];
     this.cdr.detectChanges();
+
     try {
-      let q = collection(this.firestore, "attendance");
-      if (this.filterDate) {
-        q = query(q, where("dateStr", "==", this.filterDate)) as any;
+      // Query both 'attendanceRecords' and 'attendance' collections to support legacy and new records
+      const collectionsToQuery = ["attendanceRecords", "attendance"];
+      const recordsMap = new Map<string, AttendanceRecord>();
+
+      for (const colName of collectionsToQuery) {
+        try {
+          let q = collection(this.firestore, colName);
+          if (this.filterDate) {
+            q = query(q, where("dateStr", "==", this.filterDate)) as any;
+          }
+          const snap = await getDocs(q);
+          snap.forEach(docSnap => {
+            const att: any = docSnap.data();
+            const subject = att.subject || att.unitName || att.unitCode || 'General';
+            
+            if (this.filterSubject && subject.toLowerCase() !== this.filterSubject.toLowerCase()) {
+              return;
+            }
+
+            const timeMarked = att.timestamp?.toDate ? att.timestamp.toDate().toLocaleTimeString() : 'N/A';
+            const admNo = att.admissionNumber || att.admNo || 'N/A';
+            const studentName = att.studentName || 'Student';
+            
+            const uniqueKey = `${admNo}_${subject}_${this.filterDate}`;
+            if (!recordsMap.has(uniqueKey)) {
+              recordsMap.set(uniqueKey, {
+                admissionNumber: admNo,
+                studentName: studentName,
+                subject: subject,
+                ipAddress: att.ipAddress || att.networkIp || 'N/A',
+                timeMarked: timeMarked,
+                status: att.status || 'Present'
+              });
+            }
+          });
+        } catch (colErr) {
+          console.warn(`Skipping collection ${colName}:`, colErr);
+        }
       }
-      const snap = await getDocs(q);
-      const records: AttendanceRecord[] = [];
-      snap.forEach(docSnap => {
-        const att: any = docSnap.data();
-        if (this.filterSubject && att.subject !== this.filterSubject) return;
-        const timeMarked = att.timestamp?.toDate ? att.timestamp.toDate().toLocaleTimeString() : 'N/A';
-        records.push({
-          admissionNumber: att.admissionNumber || 'N/A',
-          studentName: att.studentName || 'Student',
-          subject: att.subject || 'General',
-          ipAddress: att.ipAddress || 'N/A',
-          timeMarked: timeMarked,
-          status: att.status || 'Present'
-        });
-      });
-      this.attendanceRecords = records;
+
+      this.attendanceRecords = Array.from(recordsMap.values());
     } catch (err) {
-      console.error("Error fetching attendance:", err);
+      console.error("Error fetching attendance records:", err);
     } finally {
       this.isLoading = false;
       this.cdr.detectChanges();

@@ -1,4 +1,5 @@
-import { Component, OnInit, inject, ChangeDetectorRef } from '@angular/core';
+
+ import { Component, OnInit, inject, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink, RouterLinkActive } from '@angular/router';
@@ -79,7 +80,7 @@ interface AuthorizationItem {
         </ion-header>
 
         <div class="content-body">
-          
+
           <!-- Pending Fee Transactions Queue -->
           <div class="card">
             <div class="card-title">Pending Fee Transactions Awaiting Verification</div>

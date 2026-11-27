@@ -269,6 +269,7 @@ export class LoginPage implements AfterViewInit, OnDestroy {
       case 'teacher':    return ['/teacher', 'home'];
       case 'accountant': return ['/accountant/dashboard'];
       case 'vc':         return ['/vc', 'dashboard'];
+      case 'parent':     return ['/parent', 'dashboard'];
       case 'student':
       default:           return ['/student', 'home'];
     }
