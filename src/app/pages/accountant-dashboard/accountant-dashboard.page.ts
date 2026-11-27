@@ -1,9 +1,7 @@
-import { Component, OnInit, inject, ChangeDetectorRef, isDevMode } from '@angular/core';
+import { Component, OnInit, inject, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink, RouterLinkActive } from '@angular/router';
-import { HttpClient, HttpClientModule } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
 import {
   IonSplitPane, IonMenu, IonHeader, IonToolbar, IonTitle,
   IonContent, IonList, IonItem, IonLabel, IonIcon,
@@ -14,7 +12,7 @@ import {
   walletOutline, logOutOutline, schoolOutline, receiptOutline, statsChartOutline, searchOutline, closeOutline
 } from 'ionicons/icons';
 import { Auth, User, onAuthStateChanged, signOut } from '@angular/fire/auth';
-import { Firestore, collection, getDocs, doc, setDoc, addDoc, onSnapshot, query, where, serverTimestamp } from '@angular/fire/firestore';
+import { Firestore, collection, getDocs, doc, setDoc, addDoc, updateDoc, onSnapshot, query, where, serverTimestamp } from '@angular/fire/firestore';
 
 interface StudentAccount {
   uid: string;
@@ -56,7 +54,7 @@ interface StudentTransaction {
   selector: 'app-accountant-dashboard',
   standalone: true,
   imports: [
-    CommonModule, FormsModule, RouterLink, RouterLinkActive, HttpClientModule,
+    CommonModule, FormsModule, RouterLink, RouterLinkActive,
     IonSplitPane, IonMenu, IonHeader, IonToolbar, IonTitle,
     IonContent, IonList, IonItem, IonLabel, IonIcon,
     IonButtons, IonMenuButton, IonSpinner
@@ -109,7 +107,7 @@ interface StudentTransaction {
         </ion-header>
 
         <div class="content-body">
-          
+
           <!-- Overview Stats -->
           <div class="stats-grid">
             <div class="stat-card">
@@ -126,7 +124,7 @@ interface StudentTransaction {
           <div class="card">
             <div class="card-header-flex">
               <div class="card-title" style="margin-bottom: 0;">Student Fee Accounts & Unit Billing</div>
-              
+
               <!-- Search & Filter Bar -->
               <div class="search-box">
                 <ion-icon name="search-outline"></ion-icon>
@@ -198,14 +196,14 @@ interface StudentTransaction {
                             <option value="Cheque">Cheque</option>
                             <option value="Bursary">Bursary</option>
                           </select>
-                          
+
                           <input *ngIf="student.paymentMode !== 'Paystack'" type="text" [(ngModel)]="student.referenceCode" placeholder="Reference / Trans ID">
                           <input *ngIf="student.paymentMode === 'Paystack'" type="email" [(ngModel)]="student.email" placeholder="Student Email (required)">
-                          
+
                           <input type="number" class="amount-input" [(ngModel)]="student.paymentAmount" placeholder="Amount (KES)" min="0">
-                          
+
                           <button class="btn-primary" (click)="submitPayment(student)" [disabled]="isProcessing">
-                            {{ student.paymentMode === 'Paystack' ? 'Initialize Paystack' : 'Submit for VC Approval' }}
+                            {{ student.paymentMode === 'Paystack' ? 'Pay with Paystack' : 'Submit for VC Approval' }}
                           </button>
                         </div>
                       </td>
@@ -353,7 +351,7 @@ interface StudentTransaction {
     .main-content-wrapper { --background: #F8FAFC; }
 
     .content-body { padding: 2rem; max-width: 1400px; width: 100%; margin: 0 auto; box-sizing: border-box; }
-    
+
     .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem; margin-bottom: 2rem; }
     .stat-card { background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 10px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.02); display: flex; flex-direction: column; gap: 0.35rem; }
     .stat-label { font-size: 0.85rem; color: #64748B; font-weight: 500; }
@@ -392,7 +390,7 @@ interface StudentTransaction {
     .modal-close-btn { background: none; border: none; font-size: 20px; color: #64748B; cursor: pointer; display: flex; align-items: center; }
     .modal-body { padding: 1.5rem; }
     .modal-footer { padding: 1rem 1.5rem; background: #F8FAFC; border-top: 1px solid #E2E8F0; display: flex; justify-content: flex-end; }
-    
+
     .summary-pills { display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
     .pill { background: #F1F5F9; padding: 0.5rem 0.85rem; border-radius: 6px; font-size: 0.85rem; color: #334155; border: 1px solid #E2E8F0; }
 
@@ -405,7 +403,7 @@ export class AccountantDashboardPage implements OnInit {
   totalStudentsCount = 0;
   studentAccounts: StudentAccount[] = [];
   pendingTransactions: PendingTransaction[] = [];
-  
+
   // Search state
   searchQuery = '';
 
@@ -420,17 +418,13 @@ export class AccountantDashboardPage implements OnInit {
 
   private auth = inject(Auth);
   private firestore = inject(Firestore);
-  private http = inject(HttpClient);
   private cdr = inject(ChangeDetectorRef);
   private router = inject(Router);
   private menuCtrl = inject(MenuController);
   private toastCtrl = inject(ToastController);
 
   private FEE_PER_UNIT = 10000;
-
-  private readonly paystackInitUrl = isDevMode()
-    ? 'http://127.0.0.1:5001/elimu-database/us-central1/paystackInitialize'
-    : 'https://us-central1-elimu-database.cloudfunctions.net/paystackInitialize';
+  private readonly paystackPublicKey = 'pk_test_d50375931335caad609f6ae4d3ff828bd0c066cc';
 
   constructor() {
     addIcons({ walletOutline, logOutOutline, schoolOutline, receiptOutline, statsChartOutline, searchOutline, closeOutline });
@@ -458,6 +452,11 @@ export class AccountantDashboardPage implements OnInit {
     }
   }
 
+  async logout() {
+    await signOut(this.auth);
+    this.router.navigate(['/login']);
+  }
+
   private waitForUser(): Promise<User | null> {
     return new Promise(resolve => {
       const unsub = onAuthStateChanged(this.auth, user => {
@@ -473,8 +472,8 @@ export class AccountantDashboardPage implements OnInit {
       return this.studentAccounts;
     }
     const q = this.searchQuery.toLowerCase().trim();
-    return this.studentAccounts.filter(s => 
-      s.studentName.toLowerCase().includes(q) || 
+    return this.studentAccounts.filter(s =>
+      s.studentName.toLowerCase().includes(q) ||
       s.admissionNumber.toLowerCase().includes(q)
     );
   }
@@ -598,7 +597,7 @@ export class AccountantDashboardPage implements OnInit {
   listenToPendingTransactions() {
     this.isLoadingPending = true;
     const q = query(collection(this.firestore, "feeTransactions"), where("status", "==", "Pending VC Approval"));
-    
+
     onSnapshot(q, (snap) => {
       const txns: PendingTransaction[] = [];
       snap.forEach(docSnap => {
@@ -628,10 +627,9 @@ export class AccountantDashboardPage implements OnInit {
     this.cdr.detectChanges();
 
     try {
-      // Query feeTransactions collection matching studentUid or admissionNumber
       const q = query(collection(this.firestore, "feeTransactions"), where("studentUid", "==", student.uid));
       const snap = await getDocs(q);
-      
+
       const history: StudentTransaction[] = [];
       snap.forEach(d => {
         const tData: any = d.data();
@@ -643,7 +641,6 @@ export class AccountantDashboardPage implements OnInit {
           paymentMode: tData.paymentMode || 'Paystack',
           transactionCode: tData.reference || tData.transactionCode || 'N/A',
           status: tData.status || 'Pending'
-
         });
       });
 
@@ -662,73 +659,204 @@ export class AccountantDashboardPage implements OnInit {
     this.studentTransactionsHistory = [];
   }
 
+  private loadPaystackScript(): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const existing = (window as any)['PaystackPop'];
+      if (existing) {
+        resolve(existing);
+        return;
+      }
+
+      const scriptId = 'paystack-inline-js';
+      const existingScript = document.getElementById(scriptId) as HTMLScriptElement | null;
+      if (existingScript) {
+        existingScript.addEventListener('load', () => {
+          const loaded = (window as any)['PaystackPop'];
+          loaded ? resolve(loaded) : reject(new Error('PaystackPop unavailable after load.'));
+        });
+        existingScript.addEventListener('error', () => {
+          reject(new Error('Failed to load Paystack inline script.'));
+        });
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.id = scriptId;
+      script.src = 'https://js.paystack.co/v1/inline.js';
+      script.async = true;
+      script.onload = () => {
+        const loaded = (window as any)['PaystackPop'];
+        loaded ? resolve(loaded) : reject(new Error('PaystackPop unavailable after load.'));
+      };
+      script.onerror = () => reject(new Error('Network error loading Paystack script.'));
+      document.head.appendChild(script);
+    });
+  }
+
+  private async applyApprovedPaystackPayment(student: StudentAccount, amountPaidNow: number, txRef: string, payerEmail: string) {
+    const newAmountPaid = Number(student.amountPaid || 0) + amountPaidNow;
+    const newBalance = Math.max(0, Number(student.totalBill || 0) - newAmountPaid);
+
+    await setDoc(doc(this.firestore, 'feePayments', txRef), {
+      studentUid: student.uid,
+      studentId: student.uid,
+      admissionNumber: student.admissionNumber,
+      studentName: student.studentName,
+      parentEmail: payerEmail,
+      amount: amountPaidNow,
+      reference: txRef,
+      paymentMode: 'Paystack',
+      status: 'Successful',
+      createdAt: serverTimestamp()
+    });
+
+    await addDoc(collection(this.firestore, 'feeTransactions'), {
+      studentUid: student.uid,
+      admissionNumber: student.admissionNumber,
+      studentName: student.studentName,
+      amount: amountPaidNow,
+      paymentMode: 'Paystack',
+      reference: txRef,
+      transactionCode: txRef,
+      status: 'Approved',
+      submittedAt: serverTimestamp()
+    });
+
+    await updateDoc(doc(this.firestore, 'studentAccountBalances', student.uid), {
+      amountPaid: newAmountPaid,
+      balance: newBalance,
+      lastPaymentMode: 'Paystack',
+      lastReference: txRef,
+      updatedAt: serverTimestamp()
+    });
+
+    student.amountPaid = newAmountPaid;
+    student.balance = newBalance;
+    student.email = '';
+    student.paymentAmount = '';
+  }
+
   async submitPayment(student: StudentAccount) {
     if (!student.paymentAmount || Number(student.paymentAmount) <= 0) {
       this.presentToast("Please enter a valid payment amount.", "danger");
       return;
     }
 
+    const amount = Number(student.paymentAmount);
+
     if (student.paymentMode === 'Paystack') {
-      if (!student.email || !student.email.trim()) {
+      const payerEmail = (student.email || '').trim();
+      if (!payerEmail) {
         this.presentToast("Please enter a valid student email address for Paystack.", "danger");
         return;
       }
 
       this.isProcessing = true;
-      try {
-        const payload = {
-          email: student.email.trim(),
-          amount: Number(student.paymentAmount),
-          admissionNumber: student.admissionNumber,
-          studentUid: student.uid,
-          studentName: student.studentName
-        };
+      this.cdr.detectChanges();
 
-        const res: any = await firstValueFrom(
-          this.http.post<any>(this.paystackInitUrl, payload)
-        );
-        if (res && res.success && res.authorization_url) {
-          this.presentToast("Paystack initialized! Redirecting to payment...", "success");
-          student.email = '';
-          student.paymentAmount = '';
-          
-          window.location.href = res.authorization_url;
-        } else {
-          this.presentToast("Failed to initialize Paystack payment.", "danger");
-        }
+      let PaystackPopClass: any;
+      try {
+        PaystackPopClass = await this.loadPaystackScript();
       } catch (err: any) {
-        console.error("Paystack Init Error:", err);
-        this.presentToast(`Paystack Error: ${err.error?.error || err.message}`, "danger");
-      } finally {
+        console.error("Paystack Script Error:", err);
+        this.presentToast(`Paystack Script Error: ${err.message}`, "danger");
         this.isProcessing = false;
         this.cdr.detectChanges();
+        return;
+      }
+
+      const reference = 'ELIMU_ACC_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+      const amountInSubunits = Math.round(amount * 100);
+
+      const onPaymentDone = async (txRef: string) => {
+        try {
+          await this.applyApprovedPaystackPayment(student, amount, txRef, payerEmail);
+          this.presentToast(`Payment successful! Ref: ${txRef}`, "success");
+        } catch (saveErr: any) {
+          console.error("Error recording Paystack payment:", saveErr);
+          this.presentToast(`Payment succeeded, but saving failed: ${saveErr.message}`, "danger");
+        } finally {
+          this.isProcessing = false;
+          this.cdr.detectChanges();
+        }
+      };
+
+      const onPaymentClosed = () => {
+        this.isProcessing = false;
+        this.cdr.detectChanges();
+      };
+
+      try {
+        if (typeof PaystackPopClass.setup === 'function') {
+          const handler = PaystackPopClass.setup({
+            key: this.paystackPublicKey,
+            email: payerEmail,
+            amount: amountInSubunits,
+            currency: 'KES',
+            ref: reference,
+            callback: (response: any) => {
+              void onPaymentDone(response?.reference || reference);
+            },
+            onClose: () => {
+              onPaymentClosed();
+            }
+          });
+          handler.openIframe();
+        } else {
+          const paystack = new PaystackPopClass();
+          paystack.checkout({
+            key: this.paystackPublicKey,
+            email: payerEmail,
+            amount: amountInSubunits,
+            currency: 'KES',
+            ref: reference,
+            onSuccess: (transaction: any) => {
+              void onPaymentDone(transaction?.reference || reference);
+            },
+            onCancel: () => {
+              onPaymentClosed();
+            },
+            onError: (error: any) => {
+              console.error("Paystack Checkout Error:", error);
+              this.presentToast(`Paystack Error: ${error?.message || 'Unable to complete checkout.'}`, "danger");
+              onPaymentClosed();
+            }
+          });
+        }
+      } catch (initErr: any) {
+        console.error("Paystack Init Error:", initErr);
+        this.presentToast(`Paystack Error: ${initErr?.message || 'Initialization failed.'}`, "danger");
+        onPaymentClosed();
       }
     } else {
       if (!student.referenceCode || !student.referenceCode.trim()) {
-        this.presentToast("Please provide a payment reference number or transaction ID.", "danger");
+        this.presentToast("Please enter a reference or transaction ID.", "danger");
         return;
       }
 
       this.isProcessing = true;
+      this.cdr.detectChanges();
+
       try {
+        const refCode = student.referenceCode.trim();
         await addDoc(collection(this.firestore, "feeTransactions"), {
           studentUid: student.uid,
           admissionNumber: student.admissionNumber,
           studentName: student.studentName,
-          amount: Number(student.paymentAmount),
+          amount,
           paymentMode: student.paymentMode,
-          transactionCode: student.referenceCode.trim().toUpperCase(),
-          status: "Pending VC Approval",
-          submittedByAccountant: this.auth.currentUser?.email || 'accountant',
+          reference: refCode,
+          transactionCode: refCode,
+          status: 'Pending VC Approval',
           submittedAt: serverTimestamp()
         });
 
-        this.presentToast("Transaction submitted for VC approval successfully!", "success");
         student.referenceCode = '';
         student.paymentAmount = '';
+        this.presentToast("Payment submitted for VC approval.", "success");
       } catch (err: any) {
-        console.error("Error submitting transaction:", err);
-        this.presentToast(`Error: ${err.message}`, "danger");
+        console.error("Manual payment submission error:", err);
+        this.presentToast(`Submission failed: ${err.message}`, "danger");
       } finally {
         this.isProcessing = false;
         this.cdr.detectChanges();
@@ -736,7 +864,7 @@ export class AccountantDashboardPage implements OnInit {
     }
   }
 
-  async presentToast(message: string, color: 'success' | 'danger') {
+  private async presentToast(message: string, color: 'success' | 'danger') {
     const toast = await this.toastCtrl.create({
       message,
       duration: 3000,
@@ -744,14 +872,5 @@ export class AccountantDashboardPage implements OnInit {
       position: 'bottom'
     });
     await toast.present();
-  }
-
-  async logout() {
-    try {
-      await signOut(this.auth);
-      this.router.navigate(['/login']);
-    } catch (err) {
-      console.log("Logout error:", err);
-    }
   }
 }

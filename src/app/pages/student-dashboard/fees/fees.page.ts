@@ -1,9 +1,7 @@
-import { Component, inject, ChangeDetectorRef, OnDestroy, isDevMode } from '@angular/core';
+import { Component, inject, ChangeDetectorRef, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { HttpClient, HttpClientModule } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
 import {
   IonContent, IonHeader, IonToolbar, IonTitle, IonButtons, IonBackButton,
   IonCard, IonCardContent, IonIcon, IonBadge, ToastController, AlertController
@@ -11,7 +9,9 @@ import {
 import { addIcons } from 'ionicons';
 import { receiptOutline, cardOutline, walletOutline } from 'ionicons/icons';
 import { Auth, User, onAuthStateChanged } from '@angular/fire/auth';
-import { Firestore, doc, onSnapshot, Unsubscribe } from '@angular/fire/firestore';
+import {
+  Firestore, doc, onSnapshot, Unsubscribe, collection, setDoc, updateDoc, serverTimestamp
+} from '@angular/fire/firestore';
 
 interface AccountData {
   admissionNumber: string;
@@ -29,7 +29,7 @@ interface AccountData {
   selector: 'app-fees',
   standalone: true,
   imports: [
-    CommonModule, FormsModule, HttpClientModule,
+    CommonModule, FormsModule,
     IonContent, IonHeader, IonToolbar, IonTitle,
     IonButtons, IonBackButton, IonCard, IonCardContent, IonIcon, IonBadge
   ],
@@ -188,15 +188,11 @@ export class FeesPage implements OnDestroy {
   private firestore = inject(Firestore);
   private cdr = inject(ChangeDetectorRef);
   private router = inject(Router);
-  private http = inject(HttpClient);
   private toastCtrl = inject(ToastController);
   private alertCtrl = inject(AlertController);
 
   private balanceUnsub?: Unsubscribe;
-
-  private readonly paystackInitUrl = isDevMode()
-    ? 'http://127.0.0.1:5001/elimu-database/us-central1/paystackInitialize'
-    : 'https://us-central1-elimu-database.cloudfunctions.net/paystackInitialize';
+  private readonly paystackPublicKey = 'pk_test_d50375931335caad609f6ae4d3ff828bd0c066cc';
 
   constructor() {
     addIcons({ receiptOutline, cardOutline, walletOutline });
@@ -268,16 +264,14 @@ export class FeesPage implements OnDestroy {
     );
   }
 
-  // Clear Balance Handler
   async payClearBalance() {
     if (!this.accountData || this.accountData.balance <= 0) {
       this.presentToast("You have no outstanding balance to clear.", "danger");
       return;
     }
-    await this.initializePaystack(this.accountData.balance);
+    await this.openPaystackDirect(this.accountData.balance);
   }
 
-  // Partial Payment Handler with Ionic Alert Prompt (Min KES 3,000)
   async payPartialBalance() {
     if (!this.accountData || this.accountData.balance <= 0) {
       this.presentToast("You have no outstanding balance.", "danger");
@@ -310,7 +304,7 @@ export class FeesPage implements OnDestroy {
               this.presentToast('Amount cannot exceed your current balance due.', 'danger');
               return false;
             }
-            await this.initializePaystack(amount);
+            await this.openPaystackDirect(amount);
             return true;
           }
         }
@@ -320,39 +314,149 @@ export class FeesPage implements OnDestroy {
     await alert.present();
   }
 
-  // Calls your Firebase Cloud Function to initialize Paystack transaction
-  private async initializePaystack(amount: number) {
+  private loadPaystackScript(): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const existing = (window as any)['PaystackPop'];
+      if (existing) {
+        resolve(existing);
+        return;
+      }
+
+      const scriptId = 'paystack-inline-js';
+      const existingScript = document.getElementById(scriptId) as HTMLScriptElement | null;
+      if (existingScript) {
+        existingScript.addEventListener('load', () => {
+          const loaded = (window as any)['PaystackPop'];
+          loaded ? resolve(loaded) : reject(new Error('PaystackPop unavailable after load.'));
+        });
+        existingScript.addEventListener('error', () => {
+          reject(new Error('Failed to load Paystack inline script.'));
+        });
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.id = scriptId;
+      script.src = 'https://js.paystack.co/v1/inline.js';
+      script.async = true;
+      script.onload = () => {
+        const loaded = (window as any)['PaystackPop'];
+        loaded ? resolve(loaded) : reject(new Error('PaystackPop unavailable after load.'));
+      };
+      script.onerror = () => reject(new Error('Network error loading Paystack script.'));
+      document.head.appendChild(script);
+    });
+  }
+
+  private async recordSuccessfulPayment(amountPaidNow: number, txRef: string, payerEmail: string) {
+    if (!this.accountData || !this.currentUserUid) return;
+
+    const newAmountPaid = Number(this.accountData.amountPaid || 0) + amountPaidNow;
+    const newBalance = Math.max(0, Number(this.accountData.balance || 0) - amountPaidNow);
+
+    await setDoc(doc(collection(this.firestore, 'feePayments'), txRef), {
+      studentUid: this.currentUserUid,
+      studentId: this.currentUserUid,
+      admissionNumber: this.accountData.admissionNumber,
+      parentEmail: payerEmail,
+      amount: amountPaidNow,
+      reference: txRef,
+      paymentMode: 'Paystack',
+      status: 'Successful',
+      createdAt: serverTimestamp()
+    });
+
+    await updateDoc(doc(this.firestore, 'studentAccountBalances', this.currentUserUid), {
+      amountPaid: newAmountPaid,
+      balance: newBalance,
+      lastPaymentMode: 'Paystack',
+      lastReference: txRef,
+      updatedAt: serverTimestamp()
+    });
+  }
+
+  private async openPaystackDirect(amount: number) {
     if (!this.accountData || !this.currentUserUid) return;
 
     this.isProcessing = true;
     this.cdr.detectChanges();
 
+    let PaystackPopClass: any;
     try {
-      const payload = {
-        email: this.auth.currentUser?.email || `${this.accountData.admissionNumber.toLowerCase()}@elimu.ac.ke`,
-        amount: amount,
-        admissionNumber: this.accountData.admissionNumber,
-        studentUid: this.currentUserUid,
-        studentName: this.auth.currentUser?.displayName || 'Student'
-      };
+      PaystackPopClass = await this.loadPaystackScript();
+    } catch (err: any) {
+      console.error('Paystack Script Load Error:', err);
+      this.presentToast(`Paystack Script Error: ${err.message}`, 'danger');
+      this.isProcessing = false;
+      this.cdr.detectChanges();
+      return;
+    }
 
-      const res: any = await firstValueFrom(
-        this.http.post<any>(this.paystackInitUrl, payload)
-      );
+    const payerEmail =
+      this.auth.currentUser?.email ||
+      `${this.accountData.admissionNumber.toLowerCase().replace(/[^a-z0-9]/g, '')}@elimu.ac.ke`;
+    const reference = 'ELIMU_FEE_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+    const amountInSubunits = Math.round(amount * 100);
 
-      if (res && res.success && res.authorization_url) {
-        this.presentToast("Paystack initialized! Redirecting to payment...", "success");
-        window.location.href = res.authorization_url;
-      } else {
-        this.presentToast("Failed to initialize Paystack payment.", "danger");
+    const handlePaymentSuccess = async (txRef: string) => {
+      try {
+        await this.recordSuccessfulPayment(amount, txRef, payerEmail);
+        this.presentToast(`Payment successful! Ref: ${txRef}`, 'success');
+      } catch (saveErr: any) {
+        console.error('Error recording payment in Firestore:', saveErr);
+        this.presentToast(`Payment went through, but saving failed: ${saveErr.message}`, 'danger');
+      } finally {
         this.isProcessing = false;
         this.cdr.detectChanges();
       }
-    } catch (err: any) {
-      console.error("Paystack Init Error:", err);
-      this.presentToast(`Paystack Error: ${err.error?.error || err.message}`, "danger");
+    };
+
+    const handlePaymentClose = () => {
       this.isProcessing = false;
       this.cdr.detectChanges();
+    };
+
+    try {
+      if (typeof PaystackPopClass.setup === 'function') {
+        const handler = PaystackPopClass.setup({
+          key: this.paystackPublicKey,
+          email: payerEmail,
+          amount: amountInSubunits,
+          currency: 'KES',
+          ref: reference,
+          callback: (response: any) => {
+            void handlePaymentSuccess(response?.reference || reference);
+          },
+          onClose: () => {
+            handlePaymentClose();
+          }
+        });
+        handler.openIframe();
+      } else {
+        const paystack = new PaystackPopClass();
+        paystack.checkout({
+          key: this.paystackPublicKey,
+          email: payerEmail,
+          amount: amountInSubunits,
+          currency: 'KES',
+          ref: reference,
+          onSuccess: (transaction: any) => {
+            void handlePaymentSuccess(transaction?.reference || reference);
+          },
+          onCancel: () => {
+            handlePaymentClose();
+          },
+          onError: (error: any) => {
+            console.error('Paystack Checkout Error:', error);
+            this.presentToast(`Paystack Error: ${error?.message || 'Unable to complete checkout.'}`, 'danger');
+            handlePaymentClose();
+          }
+        });
+      }
+    } catch (initErr: any) {
+      console.error('Paystack Init Error:', initErr);
+      this.presentToast(`Paystack Error: ${initErr?.message || 'Initialization failed.'}`, 'danger');
+      handlePaymentClose();
     }
   }
 
